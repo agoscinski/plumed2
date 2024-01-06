@@ -24,7 +24,6 @@
 #include "core/ActionRegister.h"
 #include "EvaluateGridFunction.h"
 #include "core/PlumedMain.h"
-#include "core/Atoms.h"
 
 //+PLUMEDOC GRIDANALYSIS INTERPOLATE_GRID
 /*
@@ -71,6 +70,7 @@ public:
                              std::vector<double>& spacing, std::vector<bool>& pbc, const bool& dumpcube ) const ;
   void getGridPointIndicesAndCoordinates( const unsigned& ind, std::vector<unsigned>& indices, std::vector<double>& coords ) const ;
   unsigned getNumberOfDerivatives() const override;
+  std::vector<unsigned> getValueShapeFromArguments() override;
   void calculate() override;
   void update() override;
   void runFinalJobs() override;
@@ -156,11 +156,14 @@ void InterpolateGrid::calculate() {
           output_grid.setBounds( str_min, str_max, nbin,  gspacing );
       } else output_grid.setBounds( input_grid.getMin(), input_grid.getMax(), nbin, gspacing );
       getPntrToOutput(0)->setShape( output_grid.getNbin(true) );
-      for(unsigned i=0; i<output_grid.getNumberOfPoints(); ++i) addTaskToList(i);
       forcesToApply.resize( getPntrToArgument(0)->getNumberOfValues() ); firststep=false;
   }
   plumed_assert( !actionInChain() ); runAllTasks();
 }
+
+std::vector<unsigned> InterpolateGrid::getValueShapeFromArguments() {
+  return getPntrToOutput(0)->getShape();
+}  
 
 void InterpolateGrid::update() {
   if( skipUpdate() ) return;
@@ -183,8 +186,8 @@ void InterpolateGrid::getInfoForGridHeader( std::string& gtype, std::vector<std:
     if( name!="x" && name!="y" && name!="z" ) { isdists=false; break; }
   }
   if( isdists ) {
-    if( plumed.getAtoms().usingNaturalUnits() ) units = 1.0/0.5292;
-    else units = plumed.getAtoms().getUnits().getLength()/.05929;
+    if( plumed.usingNaturalUnits() ) units = 1.0/0.5292;
+    else units = plumed.getUnits().getLength()/.05929;
   }
   if( !firststep ) { 
     std::vector<unsigned> nn( output_grid.getNbin( false ) );

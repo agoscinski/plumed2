@@ -21,7 +21,7 @@
 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ */
 #include "ActionWithArguments.h"
 #include "ActionWithValue.h"
-#include "ActionToPutData.h"
+#include "ActionForInterface.h"
 #include "ActionAtomistic.h"
 #include "ActionSetup.h"
 #include "tools/PDB.h"
@@ -153,7 +153,7 @@ void ActionWithArguments::interpretArgumentList(const std::vector<std::string>& 
           std::vector<ActionWithValue*> all=action_set.select<ActionWithValue*>();
           if( all.empty() ) action->error("your input file is not telling plumed to calculate anything");
           for(unsigned j=0; j<all.size(); j++) {
-            ActionToPutData* ap=dynamic_cast<ActionToPutData*>( all[j] ); if( ap ) continue;
+            ActionForInterface* ap=dynamic_cast<ActionForInterface*>( all[j] ); if( ap ) continue;
             for(int k=0; k<all[j]->getNumberOfComponents(); ++k) all[j]->copyOutput(k)->use( action, arg ); 
           }
         } else if ( name=="*") {
@@ -219,7 +219,8 @@ void ActionWithArguments::interpretArgumentList(const std::vector<std::string>& 
           if( all.empty() ) action->error("your input file is not telling plumed to calculate anything");
           for(unsigned j=0; j<all.size(); j++) {
             bool found=false;
-            ActionToPutData* ap=dynamic_cast<ActionToPutData*>( all[j] ); if( ap ) continue;
+            ActionForInterface* ap=dynamic_cast<ActionForInterface*>( all[j] ); 
+            if( ap && ap->getName()!="ENERGY" ) continue;
             // Find an action created from the shortcut with this label that has a single action
             for(unsigned k=0; k<shortcuts.size(); ++k) {
                 if( shortcuts[k]->matchWildcard() && all[j]->getLabel()==shortcuts[k]->getShortcutLabel() && all[j]->getNumberOfComponents()==1 ) { found=true; break; }
@@ -271,10 +272,9 @@ void ActionWithArguments::requestArguments(const std::vector<Value*> &arg, const
   arguments=arg; clearDependencies();
   if( arguments.size()==0 ) return ;
   distinct_arguments.resize(0); done_over_stream=false;
-  bool storing=false, allconstant=true; allrankzero=true;
+  bool storing=false, allconstant=true;
   // Now check if we need to store data
   for(unsigned i=argstart; i<arguments.size(); ++i) {
-    if( arguments[i]->getRank()>0 ) allrankzero=false;
     if( !allow_streams ) { storing=true; break; }
     if( arguments[i]->alwaysstore ) { 
         ActionSetup* as = dynamic_cast<ActionSetup*>( arguments[i]->getPntrToAction() );
@@ -356,10 +356,16 @@ void ActionWithArguments::requestArguments(const std::vector<Value*> &arg, const
     done_over_stream=false;
   } else if( f_actions.size()>1 ) {
     done_over_stream=true;
+    // Get the number of tasks and check this is matched for all in f_action
+    unsigned ntasks = (f_actions[0]->getPntrToOutput(0))->ntasks;
+    for(unsigned i=1;i<f_actions[0]->getNumberOfComponents();++i) plumed_assert( ntasks==(f_actions[0]->getPntrToOutput(i))->ntasks ); 
     for(unsigned i=1; i<f_actions.size(); ++i) {
-      if( f_actions[0]->getFullNumberOfTasks()!=f_actions[i]->getFullNumberOfTasks() ) { done_over_stream=false; break; }
+      // Check for mismatched tasks in values
+      for(unsigned j=0;j<f_actions[i]->getNumberOfComponents();++j) {
+          if( ntasks!=(f_actions[i]->getPntrToOutput(j))->ntasks ) { done_over_stream=false; break; }
+      }
       // This checks we are not creating cicular recursive loops
-      if( f_actions[0]->checkForDependency(f_actions[i]) ) { done_over_stream=false; break; }
+      if( !done_over_stream || f_actions[0]->checkForDependency(f_actions[i]) ) { done_over_stream=false; break; }
       // Check everything for second action is computed before f_actions[0]
       const std::vector<Action*> depend( f_actions[i]->getDependencies() ); 
       for(unsigned j=0; j<depend.size(); ++j) {
@@ -376,8 +382,13 @@ void ActionWithArguments::requestArguments(const std::vector<Value*> &arg, const
     }
     if( !done_over_stream ) {
       for(unsigned i=0; i<arg.size(); ++i) { if( arg[i]->getRank()>0 ) arg[i]->buildDataStore( getLabel() );  }
-    } 
-  } else if( f_actions.size()==1 ) done_over_stream=true;
+    }
+  } else if( f_actions.size()==1 ) {
+    // Get the number of tasks and check this is matched for all in f_action
+    unsigned ntasks = (f_actions[0]->getPntrToOutput(0))->ntasks;
+    for(unsigned i=1;i<f_actions[0]->getNumberOfComponents();++i) plumed_assert( ntasks==(f_actions[0]->getPntrToOutput(i))->ntasks );
+    done_over_stream=true;
+  }
 
   if( done_over_stream ) {
     // Get the action where this argument should be applied
@@ -514,12 +525,10 @@ unsigned ActionWithArguments::setupActionInChain( const unsigned& argstart ) {
 
 ActionWithArguments::ActionWithArguments(const ActionOptions&ao):
   Action(ao),
-  allrankzero(true),
   lockRequestArguments(false),
   theAverageInArguments(NULL),
   theReweightBase(NULL),
   thisAsActionWithValue(NULL),
-  numberedkeys(false),
   done_over_stream(false)
 {
   if( keywords.exists("ARG") ) {
@@ -527,11 +536,11 @@ ActionWithArguments::ActionWithArguments(const ActionOptions&ao):
     parseArgumentList("ARG",arg);
 
     if(!arg.empty()) {
-      log.printf("  with arguments"); arg_ends.resize(0); numberedkeys=false;
+      log.printf("  with arguments");
       for(unsigned i=0; i<arg.size(); i++) log.printf("%s",arg[i]->getOutputDescription().c_str());
       log.printf("\n");
     } else if( keywords.numbered("ARG") ) {
-      unsigned narg=0; arg_ends.push_back(0); numberedkeys=true;
+      unsigned narg=0;
       for(unsigned i=1;; ++i) {
         std::vector<Value*> argn; parseArgumentList("ARG",i,argn);
         if( argn.size()==0 ) break;
@@ -540,7 +549,7 @@ ActionWithArguments::ActionWithArguments(const ActionOptions&ao):
           log.printf(" %s",argn[j]->getOutputDescription().c_str());
           arg.push_back( argn[j] ); nargt += argn[j]->getNumberOfValues();
         }
-        arg_ends.push_back( arg.size() ); log.printf("\n");
+        log.printf("\n");
         if( i==1 ) narg = nargt;
         else if( narg!=nargt && getName()!="CONCATENATE" && getName()!="MATHEVAL" && getName()!="CUSTOM" && getName()!="DIFFERENCE" && getName()!="DOT" && getName()!="TORSIONS_MATRIX" && getName()!="RMSD_CALC" ) {
            error("mismatch between number of arguments specified for different numbered ARG values");
@@ -592,37 +601,6 @@ ActionWithValue* ActionWithArguments::getFirstNonStream() {
   return aa->getFirstNonStream();
 }
 
-void ActionWithArguments::createTasksFromArguments() {
-  ActionWithValue* av = dynamic_cast<ActionWithValue*>(this); plumed_assert( av );
-  unsigned ntasks=1;
-  if( arg_ends.size()>0 ) {
-     ntasks=0; plumed_assert( arg_ends.size()>1 ); 
-     for(unsigned j=arg_ends[0]; j<arg_ends[1]; ++j) {
-         // Get number of tasks
-         if( getPntrToArgument(j)->getRank()==2 && !getPntrToArgument(j)->hasDerivatives() ) {
-             ntasks += getPntrToArgument(j)->getShape()[0];
-             // (getPntrToArgument(j)->getPntrToAction())->getFullNumberOfTasks();
-         } else ntasks += getPntrToArgument(j)->getNumberOfValues();
-     }
-
-     for(unsigned i=1; i<arg_ends.size()-1; ++i) {
-      unsigned nt = 0;
-      for(unsigned j=arg_ends[i]; j<arg_ends[i+1]; ++j) {
-          // Get number of tasks
-          if( getPntrToArgument(j)->getRank()==2 && !getPntrToArgument(j)->hasDerivatives() ) {
-               nt += getPntrToArgument(j)->getShape()[0];
-               //  (getPntrToArgument(j)->getPntrToAction())->getFullNumberOfTasks();
-          } else nt += getPntrToArgument(j)->getNumberOfValues();
-      }
-      plumed_massert( nt==1 || nt==ntasks, "problem in " + getLabel() );
-    }
-  } else if( getNumberOfArguments()==1 && (getPntrToArgument(0)->getPntrToAction())->getName()!="SELECT_COMPONENTS" ) {
-    arg_ends.push_back(0); arg_ends.push_back(1);
-    ntasks = getPntrToArgument(0)->getNumberOfValues();
-  }
-  for(unsigned i=0; i<ntasks; ++i) av->addTaskToList( i );
-}
-
 void ActionWithArguments::calculateNumericalDerivatives( ActionWithValue* a ) {
   if( done_over_stream ) error("cannot use numerical derivatives if calculation is done over stream");
   if(!a) {
@@ -659,53 +637,10 @@ double ActionWithArguments::getProjection(unsigned i,unsigned j)const {
   return Value::projection(*v1,*v2);
 }
 
-void ActionWithArguments::retrieveArguments( const MultiValue& myvals, std::vector<double>& args, const unsigned& argstart ) const {
-  if( done_over_stream ) {
-    for(unsigned i=argstart; i<(argstart+args.size()); ++i) {
-      if( arguments[i]->getRank()==0 ) args[i-argstart]=arguments[i]->get();
-      else if( !arguments[i]->value_set ) args[i-argstart]=myvals.get( arguments[i]->streampos );
-      else args[i-argstart]=arguments[i]->get( myvals.getTaskIndex() ); 
-    }
-    return;
-  }
-  if( arg_ends.size()==0 ) {
-    unsigned astart=0;
-    for(unsigned i=0; i<arguments.size(); ++i) {
-      unsigned narg_v = arguments[i]->getNumberOfValues();
-      for(unsigned j=0; j<narg_v; ++j) args[astart + j] = arguments[i]->get(j);
-      astart += narg_v;
-    }
-  } else {
-    for(unsigned i=0; i<arg_ends.size()-1; ++i) {
-      if( thisAsActionWithValue ) args[i] = retrieveRequiredArgument( i, thisAsActionWithValue->getTaskCode( myvals.getTaskIndex() ) );
-      else args[i] = retrieveRequiredArgument( i, myvals.getTaskIndex() );
-    }
-  }
-}
+void ActionWithArguments::buildTaskListFromArgumentRequests( const unsigned& ntasks, bool& reduce, std::set<AtomNumber>& tflags ) {}
 
-double ActionWithArguments::retrieveRequiredArgument( const unsigned& iarg, const unsigned& jcomp ) const {
-  unsigned k=arg_ends[iarg]; plumed_dbg_assert( k<arguments.size() );
-  if( arg_ends[iarg+1]==(k+1) && arguments[k]->getNumberOfValues()==1 ) {
-    plumed_dbg_assert( k<arguments.size() ); return arguments[k]->get( 0 );
-  } else {
-    unsigned nt=0, nn=0; unsigned mycode = jcomp;
-    if( (arg_ends[iarg+1]-arg_ends[iarg])>1 ) {
-        for(unsigned j=arg_ends[iarg]; j<arg_ends[iarg+1]; ++j) {
-          unsigned nv = arguments[j]->getNumberOfValues();
-          nt += nv; if( mycode<nt ) { k=j; break; }
-          nn += nv; k++;
-        } 
-    } 
-    return arguments[k]->get( mycode - nn );
-  }
-}
-
-void ActionWithArguments::getTasksForParent( const std::string& parent, std::vector<std::string>& actionsThatSelectTasks, std::vector<unsigned>& tflags ) {
-   if( !thisAsActionWithValue ) return; bool found=false;
-   for(unsigned i=0;i<actionsThatSelectTasks.size();++i) {
-       if( actionsThatSelectTasks[i]==parent ) { found=true; break; }
-   }
-   if( found ) error("do not use values calculated by " + parent + " in input for " + getLabel() + " as calculation will not be optimised"); 
+void ActionWithArguments::buildTaskListFromArgumentValues( const std::string& name, const std::set<AtomNumber>& tflags ) {
+  plumed_merror("should not be in this method.  Something that is not a function is being added to a chain");
 }
 
 void ActionWithArguments::setForceOnScalarArgument(const unsigned n, const double& ff) {
@@ -822,14 +757,6 @@ bool ActionWithArguments::skipUpdate() const {
   return !theReweightBase->isActive();
 }
 
-unsigned ActionWithArguments::getNumberOfArgumentsPerTask() const {
-  if( arg_ends.size()>0 ) return arg_ends.size() - 1;
-  if( done_over_stream ) return arguments.size();
-  unsigned ntasks = 0;
-  for(unsigned i=0; i<arguments.size(); ++i) ntasks += arguments[i]->getNumberOfValues();
-  return ntasks;
-}
-
 void ActionWithArguments::getNumberOfStashedInputArguments( unsigned& nquants ) const {
   const ActionWithValue* av = dynamic_cast<const ActionWithValue*>( this ); plumed_assert( av );
   for(unsigned i=0; i<arguments.size(); ++i) {
@@ -856,7 +783,7 @@ unsigned ActionWithArguments::getArgumentPositionInStream( const unsigned& jder,
   return arguments[jder]->getPositionInStream();
 }
 
-std::vector<unsigned> ActionWithArguments::getMatrixShapeForFinalTasks() {
+std::vector<unsigned> ActionWithArguments::getValueShapeFromArguments() {
   std::vector<unsigned> r2shape(2); bool argmat=false;
   for(unsigned i=0; i<arguments.size(); ++i) {
       if( arguments[i]->getRank()==2 ) {
@@ -864,27 +791,12 @@ std::vector<unsigned> ActionWithArguments::getMatrixShapeForFinalTasks() {
           r2shape[1]=arguments[i]->getShape()[1]; break;
       }
   }
-  ActionWithValue* av = dynamic_cast<ActionWithValue*>( this ); plumed_assert( av );
-  if( !argmat ) r2shape[0]=r2shape[1]=av->getFullNumberOfTasks();
+  if( !argmat ) {
+      for(unsigned i=0; i<arguments.size(); ++i) {
+          if( arguments[i]->getRank()==1 ) { r2shape[0]=r2shape[1]=arguments[i]->getShape()[0]; }
+      }
+  }
   return r2shape;
-}
-
-void ActionWithArguments::resizeForFinalTasks() {
-  ActionWithValue* av = dynamic_cast<ActionWithValue*>( this ); plumed_assert( av );
-  if( av->getFullNumberOfTasks()==0 ) { 
-      unsigned nvalues = getNumberOfFinalTasks(); 
-      for(unsigned i=0;i<nvalues;++i) av->addTaskToList( i );
-  }
-  // Find the shape that we should use for the output values
-  std::vector<unsigned> r1shape(1), r2shape( getMatrixShapeForFinalTasks() ); r1shape[0]=av->getFullNumberOfTasks();
-  // Resize everything for the analysis
-  for(unsigned i=0;i<av->getNumberOfComponents();++i) {
-      Value* myval = av->getPntrToOutput(i);
-      if( myval->getRank()==1 && !myval->hasDerivatives() && myval->getShape()[0]!=r1shape[0] ) myval->setShape( r1shape );
-      else if( myval->getRank()==2 && !myval->hasDerivatives() && (myval->getShape()[0]!=r2shape[0] || myval->getShape()[1]!=r2shape[1]) ) myval->setShape( r2shape );
-  }
-  ActionWithArguments* aa = dynamic_cast<ActionWithArguments*>( av->action_to_do_after );
-  if( aa ) aa->resizeForFinalTasks();
 }
 
 bool ActionWithArguments::calculateConstantValues( const bool& haveatoms ) {

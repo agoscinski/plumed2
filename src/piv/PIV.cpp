@@ -22,6 +22,7 @@ along with plumed.  If not, see <http://www.gnu.org/licenses/>.
 #include "tools/PDB.h"
 #include "tools/Pbc.h"
 #include "tools/Stopwatch.h"
+#include "tools/Communicator.h"
 
 #include <string>
 #include <cmath>
@@ -356,7 +357,7 @@ PIV::PIV(const ActionOptions&ao):
   FILE* fp=fopen(ref_file.c_str(),"r");
   if (fp!=NULL) {
     log<<"Opening PDB file with reference frame: "<<ref_file.c_str()<<"\n";
-    mypdb.readFromFilepointer(fp,plumed.getAtoms().usingNaturalUnits(),0.1/atoms.getUnits().getLength());
+    mypdb.readFromFilepointer(fp,plumed.usingNaturalUnits(),0.1/plumed.getUnits().getLength());
     fclose (fp);
   } else {
     error("Error in reference PDB file");

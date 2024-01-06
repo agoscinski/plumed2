@@ -27,6 +27,7 @@
 #include "core/ActionSet.h"
 #include "tools/File.h"
 #include "tools/Random.h"
+#include "tools/Communicator.h"
 
 #include <string>
 #include <map>
@@ -362,8 +363,7 @@ EMMI::EMMI(const ActionOptions&ao):
   double temp=0.0;
   parse("TEMP",temp);
   // convert temp to kbt
-  if(temp>0.0) kbt_=plumed.getAtoms().getKBoltzmann()*temp;
-  else kbt_=plumed.getAtoms().getKbT();
+  kbt_ = plumed.getKbT( temp );
 
   // exponent of uncertainty prior
   parse("PRIOR",prior_);

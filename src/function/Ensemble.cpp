@@ -22,7 +22,7 @@
 #include "Function.h"
 #include "ActionRegister.h"
 #include "core/PlumedMain.h"
-#include "core/Atoms.h"
+#include "tools/Communicator.h"
 
 namespace PLMD {
 namespace function {
@@ -96,8 +96,7 @@ Ensemble::Ensemble(const ActionOptions&ao):
   double temp=0.0;
   parse("TEMP",temp);
   if(do_reweight) {
-    if(temp>0.0) kbt=plumed.getAtoms().getKBoltzmann()*temp;
-    else kbt=plumed.getAtoms().getKbT();
+    kbt = plumed.getKbT(temp);
     if(kbt==0.0) error("Unless the MD engine passes the temperature to plumed, with REWEIGHT you must specify TEMP");
   }
 

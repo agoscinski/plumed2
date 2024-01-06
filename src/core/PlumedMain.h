@@ -24,6 +24,7 @@
 
 #include "WithCmd.h"
 #include "tools/ForwardDecl.h"
+#include "tools/Units.h"
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -54,9 +55,8 @@ namespace PLMD {
 
 class ActionAtomistic;
 class ActionPilot;
-class ActionToPutData;
+class ActionForInterface;
 class Log;
-class Atoms;
 class ActionSet;
 class DLLoader;
 class Communicator;
@@ -121,6 +121,10 @@ private:
   bool strideWasSet;
 /// Name of MD engine
   std::string MDEngine;
+/// The units used in the MD code and PLUMED
+  Units MDUnits;
+  Units units;
+  bool naturalUnits;
 
 /// Forward declaration.
   ForwardDecl<Log> log_fwd;
@@ -153,11 +157,6 @@ private:
   bool endPlumed;
 
 /// Forward declaration.
-  ForwardDecl<Atoms> atoms_fwd;
-/// Object containing information about atoms (such as positions,...).
-  Atoms&    atoms=*atoms_fwd;           // atomic coordinates
-
-/// Forward declaration.
   ForwardDecl<ActionSet> actionSet_fwd;
 /// Set of actions found in plumed.dat file
   ActionSet& actionSet=*actionSet_fwd;
@@ -166,7 +165,7 @@ private:
   std::unique_ptr<DataPassingTools> passtools;
 
 /// Map of actions that are passed data from the MD code
-  std::map<std::string,ActionToPutData*> inputs;
+  std::vector<ActionForInterface*> inputs;
 
 /// Set of Pilot actions.
 /// These are the action the, if they are Pilot::onStep(), can trigger execution
@@ -205,18 +204,24 @@ private:
 /// Store information used in class \ref generic::UpdateIf
   std::stack<bool> updateFlags;
 
+/// A string that holds the name of the action that gets the energy from the MD
+/// code.  Set empty if energy is not used.
+  std::string name_of_energy;
+
 /// This sets up the values that are set from the MD code
   void startStep();
 
-/// This creates the values that hold the atomic positions
-  void createAtomValues(); 
-
+/// This sets up the vector that contains the interface to the MD code
+  void setupInterfaceActions();
 public:
-/// This updates the units of the input quantities
-  void updateUnits();
+/// This sets the the value with a particular name to the pointer to the data in the MD code 
+  void setInputValue( const std::string& name, const unsigned& stride, void* val );
 
-/// Flag to switch off virial calculation (for debug and MD codes with no barostat)
-  bool novirial;
+/// This sets the the forces with a particular name to the pointer to the data in the MD code 
+  void setInputForce( const std::string& name, void* val );
+
+/// This updates the units of the input quantities
+  void setUnits( const bool& natural, const Units& u );
 
 /// Flag to switch on detailed timers
   bool detailedTimers;
@@ -300,6 +305,11 @@ public:
   */
   void prepareDependencies();
   /**
+    Ensure that all the atoms are shared.
+    This is used in GREX to ensure that we transfer all the positions from the MD code to PLUMED.
+  */
+  void shareAll();
+  /**
     Share the needed atoms.
     In asynchronous implementations, this method sends the required atoms to all the plumed processes,
     without waiting for the communication to complete.
@@ -350,15 +360,13 @@ public:
     If there are calculations that need to be done at the very end of the calculations this
     makes sures they are done
   */
+/// Turn off the virial for the whole calculation
+  void turnOffVirial();
   void runJobsAtEndOfCalculation();
-/// Reference to atoms object
-  Atoms& getAtoms();
 /// Reference to the list of Action's
   const ActionSet & getActionSet()const;
 /// Get the real preicision
   int getRealPrecision() const;
-/// Reference to the list of input actions
-  std::map<std::string,ActionToPutData*> & getInputActions();
 /// Referenge to the log stream
   Log & getLog();
 /// Return the number of the step
@@ -426,6 +434,20 @@ public:
 /// Transfer information
   void writeBinary(std::ostream&)const;
   void readBinary(std::istream&);
+/// Used to set the name of the action that holds the energy
+  void setEnergyValue( const std::string& name, ActionForInterface* eact );
+/// Get the value of KbT
+  double getKbT( const double& simtemp ) const ; 
+/// Get Boltzmann's constant
+  double getKBoltzmann() const ;
+/// Are we using natural units 
+  bool usingNaturalUnits() const ;
+/// Get the units that are being used
+  const Units& getUnits();
+/// Get the conversion factor 1 Plumed energy unit equals this number of MD energy units
+  double getMDEnergyInPlumedUnits() const ;
+/// Check if there is active input in the action set
+  bool inputsAreActive() const ;
 };
 
 /////
@@ -434,16 +456,6 @@ public:
 inline
 const ActionSet & PlumedMain::getActionSet()const {
   return actionSet;
-}
-
-inline
-std::map<std::string,ActionToPutData*> & PlumedMain::getInputActions() {
-  return inputs;
-}
-
-inline
-Atoms& PlumedMain::getAtoms() {
-  return atoms;
 }
 
 inline
@@ -508,7 +520,6 @@ bool PlumedMain::callErrorHandler(int code,const char* msg)const {
     return true;
   } else return false;
 }
-
 
 }
 

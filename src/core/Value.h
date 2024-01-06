@@ -48,7 +48,7 @@ class ActionAtomistic;
 /// objects.  However, if you find a use for a tempory PLMD::Value in some method
 /// you are implementing please feel free to use it.
 class Value {
-  friend class Atoms;
+  friend class DomainDecomposition;
   friend class ActionWithValue;
   friend class ActionWithArguments;
   friend class ActionAtomistic;
@@ -84,6 +84,11 @@ private:
   std::set<std::string> userdata;
 /// What is the shape of the value (0 dimensional=scalar, 1 dimensional=vector, 2 dimensional=matrix)
   std::vector<unsigned> shape;
+/// The number of tasks that must be performed to calculate this value
+  unsigned ntasks;
+/// The list of tasks that are being performed for this action
+  bool reducedTasks;
+  std::set<AtomNumber> taskList;
 /// This is used if the action is a constant
   bool constant;
 /// This is used by actions that always store data.  They cannot operate without storing all values
@@ -125,6 +130,8 @@ public:
   void set(double);
 /// Set the value of the stored data
   void set(const unsigned& n, const double& v );
+/// Add to the data array a value (used in collect_frames)
+  void push_back( const double& val );
 /// Add something to the value of the function
   void add(double);
 /// Add something to the stored data
@@ -245,6 +252,14 @@ public:
 ///
   void setDerivativeIsZeroWhenValueIsZero();
   bool getDerivativeIsZeroWhenValueIsZero() const ;
+///
+  void setNumberOfTasks( const unsigned& nt );
+  unsigned getNumberOfTasks() const ;
+  void addTaskToCurrentList( const AtomNumber& itask );
+  void addTasksToCurrentList( const std::set<AtomNumber>& tasks );
+  const std::set<AtomNumber>& getTaskList() const ;
+  bool performAllTasks() const ;
+  const std::set<std::string>& getUserNames() const ;
 };
 
 inline
@@ -257,10 +272,16 @@ void Value::applyPeriodicity( const unsigned& ival ) {
 
 inline
 void Value::set(double v) {
-  plumed_dbg_assert( shape.size()==0 );
+  plumed_dbg_massert( shape.size()==0, "problem in " + name );
   value_set=true;
   data[0]=v;
   applyPeriodicity(0);
+}
+
+inline 
+void Value::push_back(const double& v) {
+  plumed_dbg_assert( shape.size()==1 && !hasDeriv );
+  value_set=true; shape[0]++; ntasks=shape[0]; data.push_back( v );
 }
 
 inline
@@ -334,6 +355,16 @@ inline
 void Value::clearDerivatives() {
   if( constant ) return; value_set=false; 
   if( data.size()>1 ) std::fill(data.begin()+1, data.end(), 0);
+}
+
+inline
+void Value::addTaskToCurrentList( const AtomNumber& itask ) {
+  taskList.insert( itask );
+}
+
+inline
+void Value::addTasksToCurrentList( const std::set<AtomNumber>& tasks ) {
+  taskList.insert( tasks.begin(), tasks.end() );
 }
 
 inline
@@ -436,6 +467,21 @@ bool Value::storingData() const {
 inline
 void Value::setDerivativeIsZeroWhenValueIsZero() {
   derivativeIsZeroWhenValueIsZero=true;
+}
+
+inline
+const std::set<AtomNumber>& Value::getTaskList() const {
+  return taskList;
+}
+
+inline
+bool Value::performAllTasks() const {
+  return !reducedTasks;
+}
+
+inline
+const std::set<std::string>& Value::getUserNames() const {
+  return userdata;
 }
 
 }

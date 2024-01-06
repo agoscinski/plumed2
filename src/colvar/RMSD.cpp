@@ -25,7 +25,6 @@
 #include "core/ActionSetup.h"
 #include "core/ActionShortcut.h"
 #include "core/PlumedMain.h"
-#include "core/Atoms.h"
 
 namespace PLMD {
 namespace colvar {
@@ -169,7 +168,7 @@ void RMSD::createReferenceConfiguration( const std::string& lab, const std::stri
   if(!fp) plumed_merror("could not open reference file " + input); unsigned natoms=0, nframes=0;
    
   while ( do_read ) {
-     PDB mypdb; do_read=mypdb.readFromFilepointer(fp,plumed.getAtoms().usingNaturalUnits(),0.1/plumed.getAtoms().getUnits().getLength());
+     PDB mypdb; do_read=mypdb.readFromFilepointer(fp,plumed.usingNaturalUnits(),0.1/plumed.getUnits().getLength());
      if( !do_read && nframes>0 ) break ;
 
      if( natoms==0 ) natoms = mypdb.getPositions().size();
@@ -220,7 +219,8 @@ RMSD::RMSD(const ActionOptions&ao):
   ActionWithValue(ao),
   firsttime(true),
   squared(false),
-  displacement(false)
+  displacement(false),
+  multiple(false)
 {
   if( getNumberOfArguments()!=2 ) error("there should be exactly two arguments for this action");
   // Check for shorcut 
@@ -229,17 +229,16 @@ RMSD::RMSD(const ActionOptions&ao):
       natoms = getPntrToArgument(1)->getShape()[0] / 3; ntasks=1; myrmsd.resize(1);
   } else if( getPntrToArgument(0)->getRank()==2 ) {
       if( getPntrToArgument(1)->getRank()!=1 ) error("if first argument is a matrix second argument should be a vector");
-      natoms = getPntrToArgument(1)->getShape()[0] / 3; ntasks = getPntrToArgument(0)->getShape()[0]; myrmsd.resize(1);
+      natoms = getPntrToArgument(1)->getShape()[0] / 3; multiple=true; ntasks = getPntrToArgument(0)->getShape()[0]; myrmsd.resize(1);
       if( getPntrToArgument(0)->getShape()[1]!=3*natoms ) error("mismatch between numbers of pos and reference");
   } else {
       if( getPntrToArgument(1)->getRank()!=2 ) error("if first argument is a vector second argument should be a matrix");
       if( getPntrToArgument(0)->getRank()!=1 ) error("if first argument is a matrix second argument should be vector");
-      natoms = getPntrToArgument(0)->getShape()[0] / 3; ntasks = getPntrToArgument(1)->getShape()[0]; myrmsd.resize(ntasks);
+      natoms = getPntrToArgument(0)->getShape()[0] / 3; multiple=true; ntasks = getPntrToArgument(1)->getShape()[0]; myrmsd.resize(ntasks);
       if( getPntrToArgument(1)->getShape()[1]!=3*natoms ) error("mismatch between numbers of in pos and reference");
   }
   // Request the arguments
-  requestArguments( getArguments(), false ); bool unfix; parseFlag("UNFIX",unfix);
-  fixed_reference = getPntrToArgument(1)->getName()=="CONSTANT_VALUE" && !unfix;
+  requestArguments( getArguments(), false ); 
   align.resize( natoms ); parseVector("ALIGN",align);
   displace.resize( natoms ); parseVector("DISPLACE",displace);
 
@@ -276,38 +275,36 @@ RMSD::RMSD(const ActionOptions&ao):
      else { std::vector<unsigned> shape(1); shape[0]=ntasks; addValue( shape ); }
      setNotPeriodic(); 
   }
-  for(unsigned i=0;i<ntasks;++i) addTaskToList(i);
 
   // Print information to screen
   if( ntasks==1 ) log.printf("  calculating RMSD distance between two sets of %d atoms in vectors %s and %s\n", natoms, getPntrToArgument(1)->getName().c_str(), getPntrToArgument(0)->getName().c_str() );
   else if( getPntrToArgument(1)->getRank()==2 ) log.printf("  calculating RMSD distance of %d sets of atom positions in matrix with label %s from the %d atoms positions in vector with label %s \n", ntasks, getPntrToArgument(1)->getName().c_str(), natoms, getPntrToArgument(0)->getName().c_str()  );
   else log.printf("  calculating RMSD distance of %d atom positions in vector with label %s from %d sets of atom positions in matrix with label %s \n", natoms, getPntrToArgument(1)->getName().c_str(), ntasks, getPntrToArgument(0)->getName().c_str() );
-  if( fixed_reference ) log.printf("  reference configuration is fixed\n");
 
   log.printf("  method for alignment : %s \n",type.c_str() );
   if(squared)log.printf("  chosen to use SQUARED option for MSD instead of RMSD\n");
   else      log.printf("  using periodic boundary conditions\n");
 }
 
-void RMSD::setReferenceConfiguration( const unsigned& jconf ) {
+void RMSD::setReferenceConfigurations() {
   unsigned natoms = getPntrToArgument(1)->getShape()[0] / 3; 
   if( getPntrToArgument(1)->getRank()==2 ) natoms = getPntrToArgument(1)->getShape()[1] / 3;
   Vector center; std::vector<Vector> pos( natoms );
-  for(unsigned i=0; i<pos.size(); ++i) { 
-      for(unsigned j=0; j<3; ++j) pos[i][j] = getPntrToArgument(1)->get( (3*jconf+j)*pos.size() + i ); 
-      center+=pos[i]*align[i];
+  for(unsigned jconf=0; jconf<myrmsd.size(); ++jconf) {
+      center.zero();
+      for(unsigned i=0; i<pos.size(); ++i) { 
+          for(unsigned j=0; j<3; ++j) pos[i][j] = getPntrToArgument(1)->get( (3*jconf+j)*pos.size() + i ); 
+          center+=pos[i]*align[i];
+      }
+      for(unsigned i=0; i<pos.size(); ++i) pos[i] -= center;
+      myrmsd[jconf].clear(); myrmsd[jconf].set(align,displace,pos,type,true,norm_weights); 
   }
-  for(unsigned i=0; i<pos.size(); ++i) pos[i] -= center;
-  myrmsd[jconf].clear(); myrmsd[jconf].set(align,displace,pos,type,true,norm_weights);
 }
 
 // calculator
 void RMSD::calculate() {
   // Align reference configuration and set rmsd data
-  if( !fixed_reference || firsttime ) {
-      for(unsigned i=0; i<myrmsd.size();++i) setReferenceConfiguration(i);
-      firsttime=false;
-  }
+  if( firsttime || !getPntrToArgument(1)->isConstant() ) { setReferenceConfigurations(); firsttime=false; }
   // Now calculate all the RMSD values
   runAllTasks();
 }
@@ -316,7 +313,7 @@ bool RMSD::performTask( const std::string& controller, const unsigned& index1, c
   // Do not perform the loop here with a loop over other matrix elements
   if( controller!=getLabel() ) return false;
 
-  unsigned jarg = index2 - getFullNumberOfTasks(), natoms = getPntrToArgument(0)->getShape()[0] / 3; 
+  unsigned jarg = index2 - getPntrToOutput(0)->getShape()[0], natoms = getPntrToArgument(0)->getShape()[0] / 3; 
   unsigned icomp = std::floor( jarg / natoms ); unsigned iatom = jarg - icomp*natoms;
   unsigned ostrn = getPntrToOutput(0)->getPositionInStream();   
   std::vector<Vector>& pos( myvals.getFirstAtomVector() ); myvals.addValue( ostrn, pos[iatom][icomp] );
@@ -330,8 +327,8 @@ void RMSD::performTask( const unsigned& task_index, MultiValue& myvals ) const {
   unsigned rmsdno=0, structno=0, natoms = getPntrToArgument(0)->getShape()[0] / 3;
   if( getPntrToArgument(0)->getRank()==2 ) natoms = getPntrToArgument(0)->getShape()[1] / 3;
  
-  if( getFullNumberOfTasks()>1 && myrmsd.size()>1 ) rmsdno=task_index;
-  else if( getFullNumberOfTasks()>1 ) structno=task_index;  
+  if( multiple && myrmsd.size()>1 ) rmsdno=task_index;
+  else if( multiple ) structno=task_index;  
 
   // Retrieve instantaneous configuration
   std::vector<Vector>& pos( myvals.getFirstAtomVector() ); std::vector<Vector>& der( myvals.getSecondAtomVector() );
@@ -359,8 +356,8 @@ void RMSD::performTask( const unsigned& task_index, MultiValue& myvals ) const {
          }
       } else {
          Tensor rot; Matrix<std::vector<Vector> > DRotDPos(3,3); std::vector<Vector> centeredpos( natoms ), centeredreference( natoms );
-         r = myrmsd[rmsdno].calc_PCAelements( pos, der, rot, DRotDPos, direction, centeredpos, centeredreference, squared );
-         for(unsigned i=0;i<direction.size();++i) direction[i] = sqrtdisplace[i]*( direction[i] - myrmsd[rmsdno].getReference()[i] );
+         r = myrmsd[rmsdno].calc_PCAelements( pos, der, rot, DRotDPos, direction, centeredpos, centeredreference, squared ); std::vector<Vector> ref( myrmsd[rmsdno].getReference() );
+         for(unsigned i=0;i<direction.size();++i) direction[i] = sqrtdisplace[i]*( direction[i] - ref[i] );
          // Notice that we can adjust the forces here because we are parallelilising the apply loop over the RMSD values we are calculating
          if( dval->forcesWereAdded() ) {
              Tensor trot=rot.transpose(); double prefactor = 1 / static_cast<double>( natoms ); Vector v1; v1.zero();
@@ -375,10 +372,8 @@ void RMSD::performTask( const unsigned& task_index, MultiValue& myvals ) const {
              }
              for(unsigned a=0; a<3; a++) {
                  for(unsigned b=0; b<3; b++) {
-                     for(unsigned i=0; i<natoms; i++) {
-                         double tmp1=0.; for(unsigned m=0; m<natoms; m++) tmp1+=centeredpos[m][b]*dval->getForce( (task_index*3+a)*natoms + m );
-                         centeredreference[i] += sqrtdisplace[i]*tmp1*DRotDPos[a][b][i];
-                     }
+                     double tmp1=0.; for(unsigned m=0; m<natoms; m++) tmp1+=centeredpos[m][b]*dval->getForce( (task_index*3+a)*natoms + m );
+                     for(unsigned i=0; i<natoms; i++) centeredreference[i] += sqrtdisplace[i]*tmp1*DRotDPos[a][b][i];
                  }
              }
              // Now subtract the current force and add on the true force
@@ -387,12 +382,12 @@ void RMSD::performTask( const unsigned& task_index, MultiValue& myvals ) const {
              }
          }
       }
-      unsigned base = getFullNumberOfTasks();;
+      unsigned base = getPntrToOutput(0)->getShape()[0];
       for(unsigned j=0; j<3; ++j) {
           for(unsigned i=0; i<pos.size(); ++i) {
               pos[i][j] = direction[i][j]; 
               // This ensures that the matrix element is gathered
-              runTask( getLabel(), myvals.getTaskIndex(), task_index, base, myvals ); 
+              runTask( getLabel(), task_index, base, myvals ); 
               // Now clear only elements that are not accumulated over whole row 
               clearMatrixElements( myvals ); base++;
           } 

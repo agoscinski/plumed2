@@ -77,6 +77,8 @@ friend class ActionShortcut;
 /// Update only until this time.
   double update_until;
 
+/// Save the timestep here
+  double timestep;
 public:
 
 /// Check if action should be updated.
@@ -215,6 +217,13 @@ public:
 /// The set of all Actions is applied in backward order.
   virtual void apply()=0;
 
+/// First update
+/// This is a special method that is called for all 
+/// active methods before the update() method. It can
+/// be used by actions that need to update some statistics
+/// before the final update state is completed elsewhere
+  virtual void firstUpdate() {}
+
 /// Before Update.
 /// This is a special method that is called just
 /// before the update() method. It can be used by
@@ -331,7 +340,7 @@ void Action::parse(const std::string&key,T&t) {
   if ( !found && (keywords.style(key,"compulsory") || keywords.style(key,"hidden")) ) {
     if( keywords.getDefaultValue(key,def) ) {
       if( def.length()==0 || !Tools::convert(def,t) ) {
-        log.printf("ERROR in action %s with label %s : keyword %s has weird default value",name.c_str(),label.c_str(),key.c_str() );
+        if( log.isOpen() ) log.printf("ERROR in action %s with label %s : keyword %s has weird default value",name.c_str(),label.c_str(),key.c_str() );
         this->exit(1);
       }
     } else if( keywords.style(key,"compulsory") ) {

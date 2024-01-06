@@ -22,7 +22,6 @@
 #include "core/ActionRegister.h"
 #include "ContourFindingBase.h"
 #include "core/PlumedMain.h"
-#include "core/Atoms.h"
 
 //+PLUMEDOC GRIDANALYSIS FIND_CONTOUR_SURFACE
 /*
@@ -172,8 +171,6 @@ void FindContourSurface::finishOutputSetup() {
   for(unsigned i=0; i<gridcoords.getNumberOfPoints(); ++i) {
     find.assign( find.size(), 0 ); gridcoords.getIndices( i, ind );
     for(unsigned j=0; j<gdirs.size(); ++j) find[gdirs[j]]=ind[j];
-    // Current will be set equal to the start point for this grid index
-    addTaskToList( gridcoords.getIndex(find) );
   }
 
   // Set the direction in which to look for the contour
@@ -191,8 +188,8 @@ void FindContourSurface::getInfoForGridHeader( std::string& gtype, std::vector<s
     if( name!="x" && name!="y" && name!="z" ) { isdists=false; break; }
   }
   if( isdists ) {
-    if( plumed.getAtoms().usingNaturalUnits() ) units = 1.0/0.5292;
-    else units = plumed.getAtoms().getUnits().getLength()/.05929;
+    if( plumed.usingNaturalUnits() ) units = 1.0/0.5292;
+    else units = plumed.getUnits().getLength()/.05929;
   }
   std::vector<unsigned> nn( gridcoords.getNbin( false ) );
   for(unsigned i=0; i<getPntrToOutput(0)->getRank(); ++i) {

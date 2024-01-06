@@ -24,11 +24,13 @@
 #include "core/ActionWithArguments.h"
 #include "core/CollectFrames.h"
 #include "core/PlumedMain.h"
-#include "core/Atoms.h"
+#include "core/ActionSet.h"
 #include <numeric>
 
 //+PLUMEDOC REWEIGHTING ITRE
 /*
+Calculate c(t) for metadynamics trajectory using ITRE.
+
 
 \par Examples
 
@@ -77,14 +79,16 @@ ITRE::ITRE(const ActionOptions&ao):
   if( getNumberOfArguments()!=1 ) error("should only have one argument");
   Value* arg0 = getPntrToArgument(0);
   if( arg0->getRank()!=1 || arg0->hasDerivatives() || arg0->getName().find("logweights")==std::string::npos ) error("input should logweights from action that collects frames");
+  //
+  for(const auto & ip : plumed.getActionSet() ) {
+      if( ip->getName()=="METAD" ) warning("ITRE with METAD is extremely slow as there is no way to optimise the calculation.  You are better using NEW_METAD");
+  }
   // Setup the object that is collecting the data
   CollectFrames* ab=dynamic_cast<CollectFrames*>( arg0->getPntrToAction() );
   if( !ab ) error("input should be calculated by an average base object");
   ab->turnOnBiasHistory();
   // Read in the temperature
-  simtemp=0.; parse("TEMP",simtemp);
-  if(simtemp>0) simtemp*=plumed.getAtoms().getKBoltzmann();
-  else simtemp=plumed.getAtoms().getKbT();
+  simtemp=0.; parse("TEMP",simtemp); simtemp = plumed.getKbT( simtemp );
   if(simtemp==0) error("The MD engine does not pass the temperature to plumed so you have to specify it using TEMP");
   // Now read in parameters of WHAM
   parse("MAXITER",maxiter);
@@ -100,29 +104,28 @@ void ITRE::calculateWeights() {
       std::vector<unsigned> shape(1); shape[0]=nvals; getPntrToOutput(0)->setShape( shape );
   }
   Matrix<double> mymatrix( nvals, nvals ); // lower triangular exponential matrix
-  std::vector<double> in_weights( nvals ); // weights
   // Retrieve the weights from the input logweights
-  in_weights[0] = 1.0;
   for(unsigned i=0;i<nvals;++i) {
-      in_weights[i] = 1.0;
-      for(unsigned j=0;j<=i;++j) mymatrix(i,j) = exp( -simtemp*simtemp*arg0->get( i*nvals + j ) );
+      for(unsigned j=0;j<=i;++j) mymatrix(i,j) = exp( -arg0->get( i*nvals + j ) );
       for(unsigned j=i+1;j<nvals;++j) mymatrix(i,j)=0.0; // upper triangle empty
   }
 
-  std::vector<double> denominator(nvals); // will store e[V(s(t),t) - c(t)]
-  std::vector<double> normalization(nvals); // running integral of denominator
+  std::vector<double> ct(nvals, 0);  // will store final value for c(t)
+  std::vector<double> res(nvals), vec1(nvals); 
+  std::vector<double> norm(nvals); // running integral of denominator
   // Now the iterative loop to calculate the ITRE weights
   for(unsigned iter=0; iter<maxiter; ++iter) {
     for (size_t index_1 = 0; index_1 < nvals; index_1++) {
-      normalization[index_1] = 0.0; // I am doing this so that I am safe that normalization is 0
-      denominator[index_1] = in_weights[index_1] / mymatrix(index_1,index_1) ;
-    }
-    std::partial_sum(denominator.begin(), denominator.end(), normalization.begin());
-    // This multiplies the vector in_weights by the matrix of weights -- the result is in new_weights
-    mult( mymatrix, denominator, in_weights );
-    for (int index_1=0 ; index_1<nvals ; index_1++) in_weights[index_1] /= normalization[index_1];
+         double offset = mymatrix(index_1,index_1) - ct[index_1];
+         vec1[index_1] = exp( offset / simtemp );
+    } 
+    // Now do the matrix multiplication
+    mult( mymatrix, vec1, res);
+    // And compute the normalization
+    std::partial_sum(vec1.begin(), vec1.end(), norm.begin());
+    for (size_t index_1=0 ; index_1<nvals ; index_1++) ct[index_1] = -simtemp*std::log(res[index_1]/norm[index_1]);
   }
-  for(unsigned j=0; j<in_weights.size(); ++j) getPntrToOutput(0)->set( j, -std::log(in_weights[j])/simtemp);
+  for(unsigned j=0; j<nvals; ++j) getPntrToOutput(0)->set( j, ct[j] );
   return;
 }
 

@@ -154,7 +154,7 @@ bb: BIASVALUE ARG=ff
 at: ATLAS ...
 ARG=d1.x,d1.y REFERENCE=cluster.dat PACE=500
 SIGMA=0.20 BIASFACTOR=10 HEIGHT=2.0
-GRID_MAX=6.0 GRID_BIN=600 TEMP=1 TRUNCATE_GRIDS
+GRID_MAX=6.0 GRID_BIN=600 TEMP=1 
 REGULARISE=1E-8
 STATIC_WALL=0.0
 ADAPTIVE_WALL=1.0
@@ -169,7 +169,7 @@ A few explanation are required. Each local potential is estimated on a grid so t
 the method does not scale with \f$t^2\f$. To do so, we need to be sure that the
 grid will cover values of the local CVs for which the PMIs are not zeros. All the points
 that are far from the cluster and for which the PMI is zero can be ignored and not
-saved, hende we discard them with TRUNCATE_GRIDS. REGULARISE is the keyword that set
+saved, hende we discard them. REGULARISE is the keyword that set
 the probability threshold \f$\pi_0\f$. There is only one SIGMA parameter and only
 one GRID declaration since we assume the local CVs to span the same amount of space
 since they are normalized. The STATIC_WALL and ADAPTIVE_WALL control the absence of presence
@@ -222,7 +222,7 @@ HEIGHT=0.5
 TEMP=0.12
 ADAPTIVE_WALL=1.0 STATIC_WALL=0.0
 REGULARISE=1E-12
-GRID_MAX=7.5 GRID_BIN=750 TRUNCATE_GRIDS
+GRID_MAX=7.5 GRID_BIN=750
 ...
 
 PRINT ARG=n4,n5,n6,n7,n8,n9,n10,n11 FMT=%8.4f FILE=colvar STRIDE=500
@@ -257,7 +257,7 @@ at: ATLAS ...
 REFERENCE=cluster_plumed.dat PACE=500
 ARG=t1,t2
 SIGMA=0.10 BIASFACTOR=10 HEIGHT=2.0
-GRID_MAX=5.0 GRID_BIN=500 TEMP=300 TRUNCATE_GRIDS
+GRID_MAX=5.0 GRID_BIN=500 TEMP=300
 REGULARISE=1E-6
 STATIC_WALL=0.0
 ADAPTIVE_WALL=1.0
@@ -308,7 +308,6 @@ void Atlas::registerKeywords(Keywords& keys) {
   keys.add("compulsory","STATIC_WALL","the force constant of the wall applied outside the GMM");
   keys.add("compulsory","ADAPTIVE_WALL","the force constant of the wall applied outside the GMM");
   keys.add("optional","TEMP","the system temperature - this is only needed if you are doing well-tempered metadynamics");
-  keys.addFlag("TRUNCATE_GRIDS",false,"set all histograms equal to zero outside specified range");
   keys.add("compulsory","THETA_FILE","THETA","print a file containing the kernel values with this name");
   keys.add("compulsory","LOWD_CVS_FILE","LOWD_CVS","print a file containing the values of the low dimensional CVs");
 }
@@ -318,7 +317,6 @@ Action(ao),
 ActionShortcut(ao)
 {
   // Read the reference file and determine how many clusters we have
-  bool truncate=false; parseFlag("TRUNCATE_GRIDS",truncate);
   std::string ktype, argstr; parse("ARG",argstr); std::vector<unsigned> neigv; std::vector<bool> resid;
   std::string fname; parse("REFERENCE",fname); std::vector<double> weights;
   IFile ifile; ifile.open(fname); ifile.allowIgnoredFields(); double h;
@@ -421,19 +419,21 @@ ActionShortcut(ao)
   readInputLine( ccinput + ppwrs );
 
   // Setup the histograms that will store the bias potential for each basin and compute the instantaneous bias from each basin
-  std::string truncflag1="", truncflag2=""; if( truncate ) { truncflag1="IGNORE_IF_OUT_OF_RANGE"; truncflag2="ZERO_OUTSIDE_GRID_RANGE"; }
-  std::string gmax, grid_nbins, pacestr, hstring; std::vector<std::string> sigma(1); std::vector<std::string> targs,tgmin,tgmax,tgbins;
+  std::string truncflag1="IGNORE_IF_OUT_OF_RANGE", truncflag2="ZERO_OUTSIDE_GRID_RANGE"; 
+  std::string gmax, grid_nbins, pacestr, hstring; std::vector<std::string> sigma(1); std::vector<std::string> kargs,eargs,tgmin,tgmax,tgbins;
   parse("GRID_MAX",gmax); parse("GRID_BIN",grid_nbins); parse("SIGMA",sigma[0]); parse("PACE",pacestr);
   // Build the histograms for the bias potential
   readInputLine( getShortcutLabel() + "_height: CONSTANT VALUE=1.0");
   for(unsigned k=0;k<weights.size();++k) {
-      std::string num; Tools::convert( k+1, num ); targs.resize(0); tgmin.resize(0); tgmax.resize(0); tgbins.resize(0);
+      std::string num; Tools::convert( k+1, num ); kargs.resize(0); eargs.resize(0); tgmin.resize(0); tgmax.resize(0); tgbins.resize(0);
       readInputLine(getShortcutLabel() + "_logwkernel-" + num + ": MATHEVAL ARG1=" + getShortcutLabel() + "_wkernel-" + num +
                                                                           " ARG2=" + getShortcutLabel() + "_wksum FUNC=log(x/y) PERIODIC=NO");
       readInputLine(getShortcutLabel() + "-" + num + "_wtfact: MATHEVAL ARG1=" + getShortcutLabel() + "_wtfact ARG2=" + getShortcutLabel() + "_logwkernel-" +
                     num + " FUNC=x+y PERIODIC=NO"); hstring = getShortcutLabel() + "-" + num + "_wtfact";
       if( neigv[k]==0 ) {
-          targs.push_back( getShortcutLabel() + "_dist-" + num + "," + getShortcutLabel() + "_pdist-" + num );
+          readInputLine( getShortcutLabel() + "_cdist-" + num + ": CONCATENATE " + 
+                            "ARG=" + getShortcutLabel() + "_dist-" + num + "," + getShortcutLabel() + "_pdist-" + num );
+          kargs.push_back( getShortcutLabel() + "_cdist-" + num ); eargs.push_back( getShortcutLabel() + "_dist-" + num ); 
           // Convert the bandwidth to something constant actions
           gridtools::HistogramTools::convertBandwiths( getShortcutLabel() + "-" + num, sigma, this );
           if( grid_nbins.size()>0 ) {
@@ -441,16 +441,20 @@ ActionShortcut(ao)
               tgmin.push_back("0"); tgmax.push_back(gmax); tgbins.push_back( grid_nbins );
           } else {
               readInputLine( getShortcutLabel() + "-" + num + "_nwtfact: MATHEVAL ARG1=" + getShortcutLabel() + "-" + num + "_wtfact FUNC=x-log(2) PERIODIC=NO");
-              hstring = getShortcutLabel() + "-" + num + "_nwtfact," + getShortcutLabel() + "-" + num + "_nwtfact";
+              readInputLine( getShortcutLabel() + "-" + num + "_hnwtfact: CONCATENATE ARG=" + getShortcutLabel() + "-" + num + "_nwtfact," + getShortcutLabel() + "-" + num + "_nwtfact");
+              hstring = getShortcutLabel() + "-" + num + "_hnwtfact";
           }
       } else {
           std::vector<std::string> bw_str( neigv[k], sigma[0] ); if( resid[k] ) bw_str.push_back( sigma[0] );
           // Convert the bandwidth to something constant actions
-          gridtools::HistogramTools::convertBandwiths( getShortcutLabel() + "-" + num, bw_str, this ); targs.resize(0);
+          gridtools::HistogramTools::convertBandwiths( getShortcutLabel() + "-" + num, bw_str, this ); kargs.resize(0); eargs.resize(0);
           for(unsigned i=0;i<neigv[k];++i) {
               std::string eignum; Tools::convert( i+1, eignum );
-              if( resid[k] ) targs.push_back( getShortcutLabel() + "_proj" + eignum + "-" + num + "," + getShortcutLabel() + "_proj" + eignum + "-" + num  );
-              else targs.push_back( getShortcutLabel() + "_proj" + eignum + "-" + num );
+              if( resid[k] ) { 
+                   readInputLine( getShortcutLabel() + "_cproj" + eignum + "-" + num + ": CONCATENATE " +
+                                     "ARG=" + getShortcutLabel() + "_proj" + eignum + "-" + num + "," + getShortcutLabel() + "_proj" + eignum + "-" + num );
+                   kargs.push_back( getShortcutLabel() + "_cproj" + eignum + "-" + num ); eargs.push_back( getShortcutLabel() + "_proj" + eignum + "-" + num );
+              } else { kargs.push_back( getShortcutLabel() + "_proj" + eignum + "-" + num ); eargs.push_back( getShortcutLabel() + "_proj" + eignum + "-" + num ); }
               if( grid_nbins.size()>0 ) { 
                   ActionWithValue* av=plumed.getActionSet().selectWithLabel<ActionWithValue*>(getShortcutLabel() + "_kernel-" + num + "_dist_2_diff" );
                   if( av->copyOutput(0)->isPeriodic() ) {
@@ -465,17 +469,20 @@ ActionShortcut(ao)
               }
           }
           if( resid[k] ) {
-              targs.push_back( getShortcutLabel() + "_resid-" + num + "," + getShortcutLabel() + "_presid-" + num );
+              readInputLine( getShortcutLabel() + "_cresid-" + num + ": CONCATENATE ARG=" + getShortcutLabel() + "_resid-" + num + "," + getShortcutLabel() + "_presid-" + num );
+              kargs.push_back( getShortcutLabel() + "_cresid-" + num ); eargs.push_back( getShortcutLabel() + "_resid-" + num );
               if( grid_nbins.size()>0 ) {
                   if( gmax.size()==0 ) error("you must set GRID_MAX if you set GRID_BIN");
                   tgmin.push_back( "-" + gmax ); tgmax.push_back( gmax ); tgbins.push_back( grid_nbins );
               } else {
                   readInputLine( getShortcutLabel() + "-" + num + "_nwtfact: MATHEVAL ARG1=" + getShortcutLabel() + "-" + num + "_wtfact FUNC=x-log(2) PERIODIC=NO");
-                  hstring = getShortcutLabel() + "-" + num + "_nwtfact," + getShortcutLabel() + "-" + num + "_nwtfact";
+                  readInputLine( getShortcutLabel() + "-" + num + "_hnwtfact: CONCATENATE ARG=" + getShortcutLabel() + "-" + num + "_nwtfact," + getShortcutLabel() + "-" + num + "_nwtfact");
+                  hstring = getShortcutLabel() + "-" + num + "_hnwtfact"; 
               }
           }
       }
-      MetadShortcut::createMetadBias( getShortcutLabel() + "-" + num, pacestr, targs, tgmin, tgmax, tgbins, hstring, truncflag1, truncflag2, this );
+      printf("CHECK FLAGS %s %s \n", truncflag1.c_str(), truncflag2.c_str() );
+      MetadShortcut::createMetadBias( getShortcutLabel() + "-" + num, pacestr, kargs, eargs, tgmin, tgmax, tgbins, hstring, truncflag1, truncflag2, this );
   }
 
   // Normalize the weights for each of the kernels and compute the final bias

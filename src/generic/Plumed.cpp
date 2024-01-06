@@ -26,6 +26,8 @@
 #include "tools/Tools.h"
 #include "tools/PlumedHandle.h"
 #include "core/PlumedMain.h"
+#include "core/ActionSet.h"
+#include "tools/Communicator.h"
 #include <cstring>
 #ifdef __PLUMED_HAS_DLOPEN
 #include <dlfcn.h>
@@ -244,7 +246,8 @@ API([&]() {
     }
   }
 
-  int natoms=plumed.getAtoms().getNatoms();
+  ActionWithValue* mv = plumed.getActionSet().selectWithLabel<ActionWithValue*>("Masses");
+  int natoms=(mv->copyOutput(0))->getShape()[0];
 
   plumed_assert(getStride()==1) << "currently only supports STRIDE=1";
 
@@ -275,21 +278,21 @@ API([&]() {
 
   if(root) p.cmd("setMDEngine","plumed");
 
-  double engunits=plumed.getAtoms().getUnits().getEnergy();
+  double engunits=plumed.getUnits().getEnergy();
   if(root) p.cmd("setMDEnergyUnits",&engunits);
 
-  double lenunits=plumed.getAtoms().getUnits().getLength();
+  double lenunits=plumed.getUnits().getLength();
   if(root) p.cmd("setMDLengthUnits",&lenunits);
 
-  double timunits=plumed.getAtoms().getUnits().getTime();
+  double timunits=plumed.getUnits().getTime();
   if(root) p.cmd("setMDTimeUnits",&timunits);
 
-  double chaunits=plumed.getAtoms().getUnits().getCharge();
+  double chaunits=plumed.getUnits().getCharge();
   if(root) p.cmd("setMDChargeUnits",&chaunits);
-  double masunits=plumed.getAtoms().getUnits().getMass();
+  double masunits=plumed.getUnits().getMass();
   if(root) p.cmd("setMDMassUnits",&masunits);
 
-  double kbt=plumed.getAtoms().getKbT();
+  double kbt=plumed.getKbT(0);
   if(root) p.cmd("setKbT",&kbt);
 
   int res=0;
@@ -395,14 +398,14 @@ void Plumed::calculate() {
 
 void Plumed::apply() {
   Tools::DirectoryChanger directoryChanger(directory.c_str());
-  auto & f(modifyForces());
+  Vector f;
   for(unsigned i=0; i<getNumberOfAtoms(); i++) {
-    f[i][0]+=forces[3*i+0];
-    f[i][1]+=forces[3*i+1];
-    f[i][2]+=forces[3*i+2];
+    f[0]=forces[3*i+0];
+    f[1]=forces[3*i+1];
+    f[2]=forces[3*i+2];
+    addForce( i, f );
   }
-  auto & v(modifyVirial());
-  v+=virial;
+  addVirial(virial);
 }
 
 void Plumed::update() {

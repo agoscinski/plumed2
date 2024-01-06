@@ -23,6 +23,7 @@
 #include "PlumedMain.h"
 #include "ActionSet.h"
 #include "ActionRegister.h"
+#include "tools/Communicator.h"
 
 namespace PLMD {
 
@@ -52,25 +53,19 @@ CollectFrames::CollectFrames( const ActionOptions& ao):
   }
   // Setup the components
   nvals = 0;
-  if( n_real_args>0 ) {
-      plumed_assert( arg_ends.size()>0 );
-      for(unsigned i=arg_ends[0];i<arg_ends[1];++i) nvals += getPntrToArgument(i)->getNumberOfValues();
-  } else if( getNumberOfAtoms()>0 ) nvals = std::floor( getNumberOfAtoms() / atom_pos.size() );
-  else {
-      for(unsigned i=n_real_args;i<getNumberOfArguments(); ++i) nvals += getPntrToArgument(i)->getNumberOfValues();
-  }
+  if( n_real_args>0 ) nvals = getPntrToArgument(0)->getNumberOfValues();
+  else if( getNumberOfAtoms()>0 ) nvals = std::floor( getNumberOfAtoms() / atom_pos.size() );
+  else nvals = getPntrToArgument(0)->getNumberOfValues();
   frame_weights.resize( nvals ); std::vector<unsigned> shape( 1 ); shape[0]=( clearstride / getStride() )*nvals; 
   // Setup values to hold arguments
   if( n_real_args>0 ) {
-      for(unsigned i=0;i<arg_ends.size()-1;++i) {
-          if( arg_ends[i]>=n_real_args ) break;   // Ignore anything that is weights
-          unsigned tvals=0; for(unsigned j=arg_ends[i];j<arg_ends[i+1];++j) tvals += getPntrToArgument(j)->getNumberOfValues();
-          if( tvals!=nvals ) error("all values input to store object must have same length");
-          addComponent( getPntrToArgument(arg_ends[i])->getName(), shape ); 
-          if( getPntrToArgument(arg_ends[i])->isPeriodic() ) { 
-              std::string min, max; getPntrToArgument(arg_ends[i])->getDomain( min, max ); 
-              componentIsPeriodic( getPntrToArgument(arg_ends[i])->getName(), min, max );
-          } else componentIsNotPeriodic( getPntrToArgument(arg_ends[i])->getName() );
+      for(unsigned i=0;i<n_real_args;++i) {
+          if( getPntrToArgument(i)->getNumberOfValues()!=nvals ) error("all values input to store object must have same length");
+          addComponent( getPntrToArgument(i)->getName(), shape ); 
+          if( getPntrToArgument(i)->isPeriodic() ) { 
+              std::string min, max; getPntrToArgument(i)->getDomain( min, max ); 
+              componentIsPeriodic( getPntrToArgument(i)->getName(), min, max );
+          } else componentIsNotPeriodic( getPntrToArgument(i)->getName() );
       }
   }
   data.resize( getNumberOfComponents() );
@@ -82,8 +77,7 @@ CollectFrames::CollectFrames( const ActionOptions& ao):
       addComponent( "posz-" + num, shape ); componentIsNotPeriodic( "posz-" + num ); 
   }
   if( getNumberOfArguments()>n_real_args ) {
-      unsigned tvals=0; for(unsigned i=n_real_args;i<getNumberOfArguments(); ++i) tvals += getPntrToArgument(i)->getNumberOfValues();
-      if( tvals!=nvals ) error("number of weights does not match number of input arguments");
+      if( getPntrToArgument(n_real_args)->getNumberOfValues()!=nvals ) error("number of weights does not match number of input arguments");
   }
   // And create a component to store the weights -- if we store the history this is a matrix
   addComponent( "logweights", shape ); componentIsNotPeriodic( "logweights" ); 
@@ -100,48 +94,41 @@ void CollectFrames::getGridPointIndicesAndCoordinates( const unsigned& ind, std:
   coords[0] = starttime + ind*getStride()*getTimeStep();
 }
 
+unsigned CollectFrames::getNumberOfColumns() const { 
+  if( clearstride>0 ) return ndata; 
+  return 0; 
+}
+
 void CollectFrames::turnOnBiasHistory() {
   if( getNumberOfArguments()==n_real_args ) error("cannot compute bias history if no bias is stored");
+  if( nvals>1 && clearstride==0 ) error("cannot compute bias histogram if storing vectors with weights");
   save_all_bias=true; std::vector<unsigned> shape(2);
   shape[0]=shape[1]=getPntrToOutput( getNumberOfComponents()-1 )->getShape()[0]; 
   getPntrToOutput( getNumberOfComponents()-1 )->setShape( shape );
-  getPntrToOutput( getNumberOfComponents()-1 )->alwaysStoreValues();
  
   const ActionSet & as=plumed.getActionSet(); task_counts.resize(0);
-  std::vector<bool> foundbias( getNumberOfArguments() - n_real_args, false ); 
+  bool foundbias=false; 
   for(const auto & pp : as ) { 
       Action* p(pp.get()); CollectFrames* ab=dynamic_cast<CollectFrames*>(p);
       if( ab && !ab->doNotCalculateDerivatives() ) task_counts.push_back(0);
       // If this is a gather replicas then crash
       if( p->getLabel()=="GATHER_REPLICAS" ) error("cannot use ITRE with replica gathering");  
       // If this is the final bias then get the value and get out
-      for(unsigned i=n_real_args;i<getNumberOfArguments();++i) {
-          std::string name = getPntrToArgument(i)->getName(); std::size_t dot = name.find_first_of(".");
-          if( name.substr(0,dot)==p->getLabel() ) foundbias[i-n_real_args]=true; 
-      } 
+      std::string name = getPntrToArgument(n_real_args)->getName(); std::size_t dot = name.find_first_of(".");
+      if( name.substr(0,dot)==p->getLabel() ) foundbias=true; 
       // Check if we have recalculated all the things we need
-      bool foundall=true;
-      for(unsigned i=0;i<foundbias.size();++i) {
-          if( !foundbias[i] ) { foundall=false; break; }
-      }
-      if( foundall ) break;
+      if( foundbias ) break;
   }
 }
 
 void CollectFrames::computeCurrentBiasForData( const std::vector<double>& values, const bool& runserial, std::vector<double>& weights ) {
-  const ActionSet & as=plumed.getActionSet(); CollectFrames* ab=NULL;
-  std::vector<bool> foundbias( getNumberOfArguments() - n_real_args, false );
+  const ActionSet & as=plumed.getActionSet(); bool foundbias=false;
   // Set the arguments equal to the values in the old frame
   for(unsigned i=0;i<data.size();++i) {
-      unsigned k=0; 
-      for(unsigned j=arg_ends[i];j<arg_ends[i+1];++j) {
-          Value* thisarg = getPntrToArgument(j); 
-          unsigned nv = thisarg->getNumberOfValues();
-          for(unsigned n=0;n<nv;++n) { thisarg->set( n, values[i*nvals+k] ); k++; }
-      }
+      Value* thisarg = getPntrToArgument(i); 
+      for(unsigned n=0;n<thisarg->getNumberOfValues();++n) thisarg->set( n, values[i*nvals+n] ); 
   }
  
-  unsigned k=0;
   for(const auto & pp : as ) {
      Action* p(pp.get()); bool found=false, savemp, savempi;
      // If this is one of actions for the the stored arguments then we skip as we set these values from the list
@@ -152,38 +139,25 @@ void CollectFrames::computeCurrentBiasForData( const std::vector<double>& values
      if( found || p->getName()=="READ" ) continue; 
      ActionAtomistic* aa=dynamic_cast<ActionAtomistic*>(p);
      if( aa ) if( aa->getNumberOfAtoms()>0 ) continue;
-     if( task_counts.size()>0 ) {
-         ab=dynamic_cast<CollectFrames*>(p);
-         if(ab) { ab->task_start = task_counts[k]; k++; } 
-     }
+
      // Recalculate the action
      if( p->isActive() ) {
          ActionWithValue*av=dynamic_cast<ActionWithValue*>(p);
          if(av) { 
-           av->clearInputForces(); av->clearDerivatives();
+           av->clearDerivatives(); 
            if( runserial ) { savemp = av->no_openmp; savempi = av->serial; av->no_openmp = true; av->serial = true; }
          }
          p->calculate();
          if( av && runserial ) { av->no_openmp=savemp; av->serial=savempi; }
       }
-      if(ab) ab->task_start = 0;
       // If this is the final bias then get the value and get out
-      unsigned basej = 0;
-      for(unsigned i=arg_ends[arg_ends.size()-2];i<arg_ends[arg_ends.size()-1];++i) {
-          std::string name = getPntrToArgument(i)->getName(); std::size_t dot = name.find_first_of(".");
-          if( name.substr(0,dot)==p->getLabel() ) {
-              foundbias[i-n_real_args]=true; 
-              unsigned nv = getPntrToArgument(i)->getNumberOfValues();
-              for(unsigned j=0;j<nv;++j) weights[basej+j] = getPntrToArgument(i)->get(j);
-          }
-          basej += getPntrToArgument(i)->getNumberOfValues(); 
+      std::string name = getPntrToArgument(n_real_args)->getName(); std::size_t dot = name.find_first_of(".");
+      if( name.substr(0,dot)==p->getLabel() ) {
+          foundbias=true; unsigned nv = getPntrToArgument(n_real_args)->getNumberOfValues();
+          for(unsigned j=0;j<nv;++j) weights[j] = getPntrToArgument(n_real_args)->get(j);
       }
       // Check if we have recalculated all the things we need
-      bool foundall=true; 
-      for(unsigned i=0;i<foundbias.size();++i) { 
-          if( !foundbias[i] ) { foundall=false; break; }
-      }
-      if( foundall ) break;
+      if( foundbias ) break;
   }
 }
 
@@ -202,149 +176,143 @@ void CollectFrames::finishComputations( const std::vector<double>& buf ) {
   if( action_to_do_after ) action_to_do_after->finishComputations( buffer );
 }
 
-void CollectFrames::accumulate( const std::vector<std::vector<Vector> >& dir ) {
+void CollectFrames::firstUpdate() { 
+  if( !save_all_bias || (clearstride!=1 && getStep()==0) || !onStep() ) return ;
+  plumed_assert( clearstride==0 ); std::vector<double> old_data( nvals*data.size() ), current_data( nvals*data.size() );
+  // Store the current values for all the arguments
   for(unsigned i=0;i<nvals;++i) {
-      frame_weights[i]=0; if( getNumberOfArguments()>n_real_args ) frame_weights[i] = retrieveRequiredArgument( arg_ends.size()-2, i );
+      for(unsigned j=0;j<data.size();++j) current_data[j*nvals+i] = getPntrToArgument(j)->get(i);
   }
-
-  if( save_all_bias ) {
-      unsigned nstored =  allweights.size(); if( clearstride>0 ) nstored = ndata;
-      std::vector<double> old_data( nvals*data.size() ), current_data( nvals*data.size() );
-      // Store the current values for all the arguments
-      for(unsigned i=0;i<nvals;++i) {
-          for(unsigned j=0;j<data.size();++j) current_data[j*nvals+i] = getPntrToArgument(j)->get(i);
-      }
+  Value* bval = getPntrToOutput(getNumberOfComponents()-1);
+  unsigned ntimes = ndata / nvals; plumed_assert( ndata%nvals==0 );
+  std::vector<double> biasdata( nvals ), new_old_bias( ndata, 0 );
+  if( ntimes>0 ) {
       // Compute the weights for all the old configurations
       unsigned stride=comm.Get_size(), rank=comm.Get_rank();
       if( runInSerial() ) { stride=1; rank=0; }
-      unsigned ntimes = nstored / nvals; plumed_assert( nstored%nvals==0 );
-      std::vector<double> biasdata( nvals ), new_old_bias( nstored, 0 );
-      if( nstored>0 ) {
-          for(unsigned i=rank;i<ntimes-1;i+=stride) {
-              retrieveDataPoint( i, old_data ); computeCurrentBiasForData( old_data, true, biasdata );
-              for(unsigned j=0;j<biasdata.size();++j) new_old_bias[i*nvals+j] = biasdata[j];
-          }
-          if( !runInSerial() ) comm.Sum( new_old_bias );
-          // Have to compute all Gaussians for final data point
-          for(unsigned j=0;j<task_counts.size();++j) task_counts[j] = 0;
-          retrieveDataPoint( ntimes-1, old_data ); computeCurrentBiasForData( old_data, false, biasdata );
-          for(unsigned j=0;j<biasdata.size();++j) new_old_bias[(nstored-1)*nvals+j] = biasdata[j];
 
-          Value* bval = getPntrToOutput(getNumberOfComponents()-1);
-          for(unsigned i=0;i<nstored;++i) {
-              if( clearstride>0 ) {
-                 if( task_counts.size()>0 ) plumed_error();
-                 for(unsigned j=0;j<nvals;++j) bval->set( bval->getShape()[0]*(ndata+j) + i + j,  new_old_bias[i] );
-              } else {
-                 for(unsigned j=0;j<nvals;++j) off_diag_bias.push_back( new_old_bias[i] );
-              }
+      unsigned k=0; const ActionSet & as=plumed.getActionSet(); 
+      for(const auto & pp : as ) {
+          Action* p(pp.get()); ActionAtomistic* aa=dynamic_cast<ActionAtomistic*>(p);
+          if( aa ) if( aa->getNumberOfAtoms()>0 ) continue;
+          if( task_counts.size()>0 ) {
+              CollectFrames* ab=dynamic_cast<CollectFrames*>(p);
+              if(ab) { ab->task_start = task_counts[k]; k++; } 
           }
-          // And recompute the current bias
-          computeCurrentBiasForData( current_data, false, biasdata );
+          if(p->isActive() ) {
+             ActionWithValue*av=dynamic_cast<ActionWithValue*>(p);
+             if(av) av->setupForCalculation();
+          }
       }
+      for(unsigned i=rank;i<ntimes-1;i+=stride) {
+          retrieveDataPoint( i, old_data ); computeCurrentBiasForData( old_data, true, biasdata );
+          for(unsigned j=0;j<biasdata.size();++j) new_old_bias[i*nvals+j] = biasdata[j];
+      }
+      if( !runInSerial() ) comm.Sum( new_old_bias );
+      // Add the information we have to the matrices
+      for(unsigned i=0;i<ntimes-1;i++) {
+          if( task_counts.size()>0 ) {
+              for(unsigned j=0;j<nvals;++j) {
+                  double prevval=0; if( ndata>(i+1) ) prevval = bval->get( (ndata-1)*ndata/2 + i + j, false );
+                  bval->push_back(prevval+new_old_bias[i]);
+              }
+          } else {
+              for(unsigned j=0;j<nvals;++j) bval->push_back(new_old_bias[i]);
+          }
+      }
+      // Have to compute all Gaussians for final data point
+      for(const auto & pp : as ) {
+          Action* p(pp.get()); ActionAtomistic* aa=dynamic_cast<ActionAtomistic*>(p);
+          if( aa ) if( aa->getNumberOfAtoms()>0 ) continue;
+          if( task_counts.size()>0 ) {
+              CollectFrames* ab=dynamic_cast<CollectFrames*>(p);
+              if(ab) ab->task_start = 0;
+          }
+          if(p->isActive() ) {
+             ActionWithValue*av=dynamic_cast<ActionWithValue*>(p);
+             if(av) { av->clearInputForces(); av->setupForCalculation(); }
+          }
+      }
+      retrieveDataPoint( ntimes-1, old_data ); computeCurrentBiasForData( old_data, false, biasdata );
+      for(unsigned j=0;j<nvals;++j) bval->push_back(biasdata[j]);
       if( task_counts.size()>0 ) {
           // And update the task counts
           const ActionSet & as=plumed.getActionSet(); unsigned k=0;
-          std::vector<bool> foundbias( getNumberOfArguments() - n_real_args, false );
+          bool foundbias=false;
           for(const auto & pp : as ) {
               Action* p(pp.get()); CollectFrames* ab=dynamic_cast<CollectFrames*>(p);
-              if( ab ) { task_counts[k] = ab->getFullNumberOfTasks(); k++; }
+              if( ab ) { task_counts[k] = ab->copyOutput(0)->getNumberOfTasks(); k++; }
               // If this is the final bias then get the value and get out
-              for(unsigned i=n_real_args;i<getNumberOfArguments();++i) {
-                  std::string name = getPntrToArgument(i)->getName(); std::size_t dot = name.find_first_of(".");
-                  if( name.substr(0,dot)==p->getLabel() ) foundbias[i-n_real_args]=true;
-              }
+              std::string name = getPntrToArgument(n_real_args)->getName(); std::size_t dot = name.find_first_of(".");
+              if( name.substr(0,dot)==p->getLabel() ) foundbias=true;
               // Check if we have recalculated all the things we need
-              bool foundall=true;
-              for(unsigned i=0;i<foundbias.size();++i) {
-                  if( !foundbias[i] ) { foundall=false; break; }
-              }
-              if( foundall ) break;
+              if( foundbias ) break;
           }
       }
+  } 
+  // And recompute the current bias
+  computeCurrentBiasForData( current_data, false, biasdata );
+  for(unsigned j=0;j<nvals;++j) bval->push_back(biasdata[j]);
+}
+
+void CollectFrames::accumulate( const std::vector<std::vector<Vector> >& dir ) {
+  for(unsigned i=0;i<nvals;++i) {
+      frame_weights[i]=0; if( getNumberOfArguments()>n_real_args ) frame_weights[i] = getPntrToArgument( n_real_args )->get( i );
   }
 
   if( clearstride>0 ) {
       Value* bval = getPntrToOutput( getNumberOfComponents()-1 ); Vector thispos;
       for(unsigned i=0;i<nvals;++i) {
-          if( bval->getRank()==2 ) bval->set( ndata*bval->getShape()[0] + ndata, frame_weights[i] );
-          else bval->set( ndata, frame_weights[i] );      
+          if( bval->getRank()==1 ) bval->set( ndata, frame_weights[i] );      
           if( n_real_args>0 ) {
               for(unsigned j=0;j<data.size();++j ) {
-                  getPntrToOutput(j)->set( ndata, retrieveRequiredArgument( j, i ) ); 
+                  getPntrToOutput(j)->set( ndata, getPntrToArgument(j)->get(i) ); 
               }
           }
           if( dir.size()>0 ) {
               for(unsigned j=0;j<dir[i].size();++j) {
                   thispos = getReferencePosition(j) + dir[i][j];
-                  for(unsigned k=0;k<3;++k) getPntrToOutput(3*j+k)->set( ndata, thispos[k] );
+                  for(unsigned k=0;k<3;++k) getPntrToOutput(n_real_args+3*j+k)->set( ndata, thispos[k] );
               }
           }
           ndata++;
       }
       if( getStep()%clearstride==0 ) ndata=0;
   } else {
-      Vector thispos; 
+      Value* bval = getPntrToOutput( getNumberOfComponents()-1 ); Vector thispos;
       for(unsigned i=0;i<nvals;++i) {
-          allweights.push_back( frame_weights[i] );
+          if( bval->getRank()==1 ) bval->push_back( frame_weights[i] );
           if( n_real_args>0 ) { 
               for(unsigned j=0;j<data.size();++j ) {
-                  data[j] = retrieveRequiredArgument( j, i ); 
+                 getPntrToOutput(j)->push_back( getPntrToArgument(j)->get(i) );
               }
-              alldata.push_back( data );
           }
           if( dir.size()>0 ) {
               for(unsigned j=0;j<dir[i].size();++j) {
                   thispos = getReferencePosition(j) + dir[i][j];
-                  for(unsigned k=0;k<3;++k) posdata[3*j+k] = thispos[k];
+                  for(unsigned k=0;k<3;++k) getPntrToOutput(n_real_args+3*j+k)->push_back( thispos[k] );
               }
-              allposdata.push_back( posdata );
           }
+          ndata++;
       }
-  }
-
-  // This transfers all the information to the output values in the case of clearstride==0
-  if( clearstride==0 ) {
-      std::vector<unsigned> shape(1); shape[0]=allweights.size(); std::vector<double> sumoff( allweights.size(), 0 );
-      for(unsigned i=0;i<getNumberOfComponents()-1;++i) getPntrToOutput(i)->setShape( shape );
-      if( save_all_bias ) { getPntrToOutput(getNumberOfComponents()-1)->clearDerivatives(); shape.resize(2); shape[0]=shape[1]=allweights.size(); }
-      getPntrToOutput(getNumberOfComponents()-1)->setShape( shape ); unsigned k=0;
-      for(unsigned i=0;i<allweights.size();++i) {
-          for(unsigned j=0;j<data.size();++j) { getPntrToOutput(j)->set( i, alldata[i][j] ); }
-          unsigned pos_b=0; if( n_real_args>0 ) pos_b = arg_ends.size()-2;
-          for(unsigned j=0;j<posdata.size();++j) { getPntrToOutput(pos_b+j)->set( i, allposdata[i][j] ); }
-          if( save_all_bias ) {
-              Value* myw=getPntrToOutput(getNumberOfComponents()-1); myw->set( allweights.size()*i + i, allweights[i] );
-              for(unsigned j=0;j<i;++j) { 
-                  if( task_counts.size()>0 ) {
-                      sumoff[j] += off_diag_bias[k]; myw->set( allweights.size()*i + j, sumoff[j] );
-                  } else myw->set( allweights.size()*i + j, off_diag_bias[k] );
-                  k++;
-              }   
-          } else getPntrToOutput(getNumberOfComponents()-1)->set( i, allweights[i] );
+      if( bval->getRank()==2 ) {
+          std::vector<unsigned> shape(2); shape[0]=shape[1]=ndata; bval->setShape( shape ); 
       }
   }
 }
 
 void CollectFrames::retrieveDataPoint( const unsigned& itime, std::vector<double>& old_data ) {
-  if( clearstride>0 ) {
-      for(unsigned i=0;i<nvals;++i) {
-          for(unsigned j=0;j<data.size();++j) old_data[j*nvals+i] = getPntrToOutput(j)->get( itime*nvals + i );
-      }
-  } else {
-      for(unsigned i=0;i<nvals;++i) {
-          for(unsigned j=0;j<data.size();++j) old_data[j*nvals+i] = alldata[itime*nvals + i][j];
-      }
+  for(unsigned i=0;i<nvals;++i) {
+      for(unsigned j=0;j<data.size();++j) old_data[j*nvals+i] = getPntrToOutput(j)->get( itime*nvals + i );
   }
 }
 
-void CollectFrames::buildCurrentTaskList( bool& forceAllTasks, std::vector<std::string>& actionsThatSelectTasks, std::vector<unsigned>& tflags ) {
-   // Add any new tasks to the list
-   actionsThatSelectTasks.push_back( getLabel() );
-   unsigned nstart = getFullNumberOfTasks(), ndata = getPntrToOutput(0)->getShape()[0];
-   for(unsigned i=nstart;i<ndata;++i) addTaskToList(i);  
+void CollectFrames::setupCurrentTaskList() {
+   if( task_start==0 ) { ActionWithValue::setupCurrentTaskList(); return; }
    // Now switch on the relevant tasks
-   for(unsigned i=task_start;i<tflags.size();++i) tflags[i]=1; 
+   for(unsigned j=0; j<getNumberOfComponents(); ++j ) {
+       for(unsigned i=task_start;i<getPntrToOutput(j)->getShape()[0];++i) getPntrToOutput(j)->addTaskToCurrentList(AtomNumber::index(i));  
+   }
 }
 
 void CollectFrames::performTask( const unsigned& current, MultiValue& myvals ) const {

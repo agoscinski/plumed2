@@ -26,7 +26,7 @@
 #include "PlumedMain.h"
 #include "tools/Log.h"
 #include "tools/Exception.h"
-#include "Atoms.h"
+#include "tools/Communicator.h"
 #include "ActionSet.h"
 #include <iostream>
 
@@ -61,6 +61,7 @@ Action::Action(const ActionOptions&ao):
   line(ao.line),
   update_from(std::numeric_limits<double>::max()),
   update_until(std::numeric_limits<double>::max()),
+  timestep(0),
   active(false),
   restart(ao.plumed.getRestart()),
   doCheckPoint(ao.plumed.getCPT()),
@@ -71,8 +72,12 @@ Action::Action(const ActionOptions&ao):
   multi_sim_comm(plumed.multi_sim_comm),
   keywords(ao.keys)
 {
+  // Retrieve the timestep and save it
+  ActionWithValue* ts = plumed.getActionSet().selectWithLabel<ActionWithValue*>("timestep");
+  if( ts ) timestep = (ts->copyOutput(0))->get();  
+
   line.erase(line.begin());
-  if( name!="PUT" && !keywords.exists("NO_ACTION_LOG") ) log.printf("Action %s\n",name.c_str());
+  if( !keywords.exists("NO_ACTION_LOG") ) log.printf("Action %s\n",name.c_str());
 
   if(comm.Get_rank()==0) {
     replica_index=multi_sim_comm.Get_rank();
@@ -86,7 +91,7 @@ Action::Action(const ActionOptions&ao):
     label="@"+s;
   }
   if( plumed.getActionSet().selectWithLabel<Action*>(label) ) error("label " + label + " has been already used");
-  if( name!="PUT" && !keywords.exists("NO_ACTION_LOG") ) log.printf("  with label %s\n",label.c_str());
+  if( !keywords.exists("NO_ACTION_LOG") ) log.printf("  with label %s\n",label.c_str());
   if ( keywords.exists("UPDATE_FROM") ) parse("UPDATE_FROM",update_from);
   if(update_from!=std::numeric_limits<double>::max()) log.printf("  only update from time %f\n",update_from);
   if ( keywords.exists("UPDATE_UNTIL") ) parse("UPDATE_UNTIL",update_until);
@@ -251,11 +256,11 @@ long int Action::getStep()const {
 }
 
 double Action::getTime()const {
-  return plumed.getAtoms().getTimeStep()*getStep();
+  return timestep*getStep();
 }
 
 double Action::getTimeStep()const {
-  return plumed.getAtoms().getTimeStep();
+  return timestep; 
 }
 
 
@@ -273,12 +278,12 @@ void Action::prepare() {
 }
 
 void Action::error( const std::string & msg ) const {
-  log.printf("ERROR in input to action %s with label %s : %s \n \n", name.c_str(), label.c_str(), msg.c_str() );
+  if( log.isOpen() ) log.printf("ERROR in input to action %s with label %s : %s \n \n", name.c_str(), label.c_str(), msg.c_str() );
   plumed_merror("ERROR in input to action " + name + " with label " + label + " : " + msg );
 }
 
 void Action::warning( const std::string & msg ) const {
-  log.printf("WARNING for action %s with label %s : %s \n", name.c_str(), label.c_str(), msg.c_str() );
+  if( log.isOpen() ) log.printf("WARNING for action %s with label %s : %s \n", name.c_str(), label.c_str(), msg.c_str() );
 }
 
 void Action::calculateFromPDB( const PDB& pdb ) {

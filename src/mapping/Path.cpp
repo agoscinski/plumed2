@@ -129,14 +129,16 @@ Path::Path( const ActionOptions& ao ):
   std::string refname, refargs, metric; 
   std::vector<std::string> argnames; parseVector("ARG",argnames);
   readInputFrames( argnames, refname, false, this, refargs, metric );
+  // Find the shortest distance to the frames
+  readInputLine( getShortcutLabel() + "_mindist: LOWEST ARG=" + getShortcutLabel() + "_data");
   // Now create all other parts of the calculation
   std::string lambda; parse("LAMBDA",lambda);
   // Now create MATHEVAL object to compute exponential functions
-  readInputLine( getShortcutLabel() + "_weights: MATHEVAL ARG1=" + getShortcutLabel() + "_data  FUNC=exp(-x*" + lambda + ") PERIODIC=NO" );
+  readInputLine( getShortcutLabel() + "_weights: MATHEVAL ARG1=" + getShortcutLabel() + "_data ARG2=" + getShortcutLabel() + "_mindist FUNC=exp(-(x-y)*" + lambda + ") PERIODIC=NO" );
   // Create denominator
   readInputLine( getShortcutLabel() + "_denom: SUM ARG=" + getShortcutLabel() + "_weights PERIODIC=NO");
   // Now compte zpath variable
-  readInputLine( getShortcutLabel() + "_z: MATHEVAL ARG=" + getShortcutLabel() + "_denom FUNC=-log(x)/" + lambda + " PERIODIC=NO");
+  readInputLine( getShortcutLabel() + "_z: MATHEVAL ARG1=" + getShortcutLabel() + "_denom ARG2=" + getShortcutLabel() + "_mindist FUNC=y-log(x)/" + lambda + " PERIODIC=NO");
   // Now get coefficients for properies for spath
   readPropertyInformation( pnames, getShortcutLabel(), refname, this );
   // Now create COMBINE objects to compute numerator of path
@@ -236,8 +238,7 @@ void Path::readInputFrames( const std::vector<std::string>& argnames, std::strin
      std::string num, align_str, displace_str; Tools::convert( mypdb.getOccupancy()[0], align_str ); Tools::convert( mypdb.getBeta()[0], displace_str );
      for(unsigned j=1; j<mypdb.getAtomNumbers().size(); ++j ) { Tools::convert( mypdb.getOccupancy()[j], num ); align_str += "," + num; Tools::convert( mypdb.getBeta()[0], num ); displace_str += "," + num; }
      // And create the RMSD object
-     std::string unfix_str; if( action->getName()=="ADAPTIVE_PATH" ) unfix_str = " UNFIX"; 
-     std::string comname = "RMSD_CALC SQUARED " + unfix_str; if( geometric ) { comname = "RMSD_CALC DISPLACEMENT " + unfix_str; metric = comname + " TYPE=" + mtype + " ALIGN=" + align_str + " DISPLACE=" + displace_str; }
+     std::string comname = "RMSD_CALC SQUARED "; if( geometric ) { comname = "RMSD_CALC DISPLACEMENT "; metric = comname + " TYPE=" + mtype + " ALIGN=" + align_str + " DISPLACE=" + displace_str; }
      action->readInputLine( action->getShortcutLabel() + "_data: " + comname + " TYPE=" + mtype + " ARG1=" + action->getShortcutLabel() + "_pos ARG2=" + action->getShortcutLabel() + "_ref ALIGN=" + align_str + " DISPLACE=" + displace_str ); 
      return;
   }

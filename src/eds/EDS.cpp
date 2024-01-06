@@ -17,7 +17,6 @@ along with plumed.  If not, see <http://www.gnu.org/licenses/>.
 #include "bias/Bias.h"
 #include "core/ActionAtomistic.h"
 #include "core/ActionRegister.h"
-#include "core/Atoms.h"
 #include "core/PlumedMain.h"
 #include "tools/File.h"
 #include "tools/Matrix.h"
@@ -505,9 +504,7 @@ EDS::EDS(const ActionOptions&ao):
     readInRestart(b_mean);
   } else {
 
-    if(temp>=0.0) kbt_=plumed.getAtoms().getKBoltzmann()*temp;
-    else kbt_ = plumed.getAtoms().getKbT();
-
+    kbt_ = plumed.getKbT( temp );
     //in driver, this results in kbt of 0
     if(kbt_ == 0) {
       error("  Unable to determine valid kBT. "
@@ -890,7 +887,7 @@ void EDS::update_pseudo_virial() {
   for(unsigned int i = 0; i < ncvs_; ++i) {
     //checked in setup to ensure this cast is valid.
     ActionAtomistic* cv = dynamic_cast<ActionAtomistic*> (getPntrToArgument(i)->getPntrToAction());
-    Tensor &v(cv->modifyVirial());
+    const Tensor &v(cv->getVirial());
     Tensor box(cv->getBox());
     const unsigned int natoms=cv->getNumberOfAtoms();
     if(!volume)

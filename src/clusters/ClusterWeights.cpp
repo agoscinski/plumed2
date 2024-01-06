@@ -24,7 +24,6 @@
 #include "core/ActionRegister.h"
 #include "core/PlumedMain.h"
 #include "core/ActionSet.h"
-#include "core/Atoms.h"
 #include "multicolvar/MultiColvarBase.h"
 #include "ClusteringBase.h"
 
@@ -77,7 +76,7 @@ public:
 /// The number of derivatives
   unsigned getNumberOfDerivatives() const ;
 /// Work out what needs to be done in this action
-  void buildCurrentTaskList( bool& forceAllTasks, std::vector<std::string>& actionsThatSelectTasks, std::vector<unsigned>& tflags );
+  void setupCurrentTaskList() override ;
 /// Do the calculation
   void calculate();
 /// We can use ActionWithVessel to run all the calculation
@@ -111,8 +110,6 @@ ClusterWeights::ClusterWeights(const ActionOptions&ao):
   // Now create the value
   std::vector<unsigned> shape(1); shape[0]=clusters[0]->getShape()[0];
   addValue( shape ); setNotPeriodic(); getPntrToOutput(0)->alwaysStoreValues();
-  // And the tasks
-  for(unsigned i=0; i<shape[0]; ++i) addTaskToList(i);
   // Find out which cluster we want
   parse("CLUSTER",clustr);
   if( clustr<1 ) error("cannot look for a cluster larger than the largest cluster");
@@ -120,10 +117,10 @@ ClusterWeights::ClusterWeights(const ActionOptions&ao):
   log.printf("  atoms in %dth largest cluster calculated by %s are equal to one \n",clustr, cc->getLabel().c_str() );
 }
 
-void ClusterWeights::buildCurrentTaskList( bool& forceAllTasks, std::vector<std::string>& actionsThatSelectTasks, std::vector<unsigned>& tflags ) {
-  plumed_assert( getPntrToArgument(0)->valueHasBeenSet() ); actionsThatSelectTasks.push_back( getLabel() );
+void ClusterWeights::setupCurrentTaskList() {
+  plumed_assert( getPntrToArgument(0)->valueHasBeenSet() ); 
   for(unsigned i=0; i<getPntrToArgument(0)->getShape()[0]; ++i) {
-    if( fabs(getPntrToArgument(0)->get(i)-clustr)<epsilon ) tflags[i]=1;
+    if( fabs(getPntrToArgument(0)->get(i)-clustr)<epsilon ) getPntrToOutput(0)->addTaskToCurrentList(AtomNumber::index(i));
   }
 }
 

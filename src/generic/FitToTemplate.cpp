@@ -29,10 +29,10 @@
 #include "tools/AtomNumber.h"
 #include "tools/Tools.h"
 #include "tools/RMSD.h"
-#include "core/Atoms.h"
 #include "core/PlumedMain.h"
 #include "core/ActionSet.h"
 #include "core/GenericMolInfo.h"
+#include "core/PbcAction.h"
 #include "tools/PDB.h"
 #include "tools/Pbc.h"
 
@@ -192,7 +192,7 @@ class FitToTemplate:
   // Copies of the box and position values
   Value* boxValue;
   std::vector<Value*> pos_values;
-
+  PbcAction* pbc_action;
 
   Vector getGlobalForce( const AtomNumber& i ) const ;
   void addGlobalForce( const AtomNumber& i, const Vector& ff );
@@ -236,7 +236,7 @@ FitToTemplate::FitToTemplate(const ActionOptions&ao):
   PDB pdb;
 
   // read everything in ang and transform to nm if we are not in natural units
-  if( !pdb.read(reference,plumed.getAtoms().usingNaturalUnits(),0.1/atoms.getUnits().getLength()) )
+  if( !pdb.read(reference,plumed.usingNaturalUnits(),0.1/plumed.getUnits().getLength()) )
     error("missing input file " + reference );
 
   requestAtoms(pdb.getAtomNumbers());
@@ -301,9 +301,9 @@ FitToTemplate::FitToTemplate(const ActionOptions&ao):
   ActionToPutData* az=plumed.getActionSet().selectWithLabel<ActionToPutData*>("posz");
   if( !az ) error("cannot align posx has not been set");
   pos_values.push_back( az->copyOutput(0) );
-  ActionToPutData* ap=plumed.getActionSet().selectWithLabel<ActionToPutData*>("Box");
-  if( !ap ) error("cannot align box has not been set");
-  boxValue=ap->copyOutput(0); checkRead();
+  pbc_action=plumed.getActionSet().selectWithLabel<PbcAction*>("Box");
+  if( !pbc_action ) error("cannot align box has not been set");
+  boxValue=pbc_action->copyOutput(0); checkRead();
 }
 
 Vector FitToTemplate::getGlobalForce( const AtomNumber& i ) const {
@@ -343,8 +343,8 @@ void FitToTemplate::calculate() {
       setGlobalPosition(AtomNumber::index(i),matmul(rotation,ato-center_positions)+center);
     }
 // rotate box
-    Pbc & pbc(modifyGlobalPbc());
-    pbc.setBox(matmul(pbc.getBox(),transpose(rotation)));
+    Pbc& pbc(pbc_action->getPbc());
+    pbc.setBox(matmul(pbc_action->getPbc().getBox(),transpose(rotation)));
   }
 
 }

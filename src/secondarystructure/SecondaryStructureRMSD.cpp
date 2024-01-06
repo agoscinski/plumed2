@@ -23,7 +23,6 @@
 #include "core/PlumedMain.h"
 #include "core/ActionSet.h"
 #include "core/GenericMolInfo.h"
-#include "core/Atoms.h"
 #include "tools/SwitchingFunction.h"
 #include "core/ActionShortcut.h"
 
@@ -141,13 +140,12 @@ void SecondaryStructureRMSD::addColvar( const std::vector<unsigned>& newatoms ) 
     for(unsigned i=0; i<newatoms.size(); ++i) log.printf("%d ",all_atoms[newatoms[i]].serial() );
     log.printf("\n");
   }
-  addTaskToList( colvar_atoms.size() );
   colvar_atoms.push_back( newatoms );
 }
 
 void SecondaryStructureRMSD::setSecondaryStructure( std::vector<Vector>& structure, double bondlength, double units ) {
   // If we are in natural units get conversion factor from nm into natural length units
-  if( plumed.getAtoms().usingNaturalUnits() ) {
+  if( plumed.usingNaturalUnits() ) {
     error("cannot use this collective variable when using natural units");
   }
   plumed_massert( !(align_strands && align_atom_1==0 && align_atom_2==0), "you must use setAtomsFromStrands with strands cutoff");
@@ -181,7 +179,7 @@ void SecondaryStructureRMSD::setupValues() {
   unsigned nref = myrmsd.size(); if( alignType=="DRMSD" ) nref=drmsd_targets.size();
 
   plumed_assert( nref>0 );
-  std::vector<unsigned> shape(1); shape[0]=getFullNumberOfTasks();
+  std::vector<unsigned> shape(1); shape[0]=colvar_atoms.size();
   if( nref==1 ) { addValue( shape ); setNotPeriodic(); }
   else {
     std::string num;
@@ -192,15 +190,14 @@ void SecondaryStructureRMSD::setupValues() {
   }
 }
 
-void SecondaryStructureRMSD::buildCurrentTaskList( bool& forceAllTasks, std::vector<std::string>& actionsThatSelectTasks, std::vector<unsigned>& tflags ) {
+void SecondaryStructureRMSD::setupCurrentTaskList() {
   if( s_cutoff2>0 ) {
-    actionsThatSelectTasks.push_back( getLabel() ); 
-    for(unsigned i=0; i<tflags.size(); ++i) {
+    for(unsigned i=0; i<getPntrToOutput(0)->getNumberOfValues(); ++i) {
       Vector distance=pbcDistance( ActionAtomistic::getPosition( getAtomIndex(i,align_atom_1) ),
                                    ActionAtomistic::getPosition( getAtomIndex(i,align_atom_2) ) );
-      if( distance.modulo2()<s_cutoff2 ) tflags[i]=1;
+      if( distance.modulo2()<s_cutoff2 ) getPntrToOutput(0)->addTaskToCurrentList(AtomNumber::index(i));
     }
-  } 
+  } else ActionWithValue::setupCurrentTaskList(); 
 }
 
 void SecondaryStructureRMSD::calculate() {

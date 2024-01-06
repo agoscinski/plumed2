@@ -32,10 +32,10 @@
 #include "core/ActionToPutData.h"
 #include "core/ActionRegister.h"
 #include "core/PlumedMain.h"
-#include "core/Atoms.h"
-
+#include "core/PbcAction.h"
 #include "tools/File.h"
 #include "tools/Pbc.h"
+#include "tools/Communicator.h"
 
 #include <algorithm>
 
@@ -78,10 +78,10 @@ class EffectiveEnergyDrift:
 
   double eed;
 
-  Atoms& atoms;
   std::vector<Value*> pos_values;
   Value* boxValue;
   std::vector<ActionWithValue*> biases;
+  ActionForInterface* domain_decomposition;
 
   long int pDdStep;
   int nLocalAtoms;
@@ -109,7 +109,7 @@ class EffectiveEnergyDrift:
   bool isFirstStep;
 
   bool ensemble;
-
+  PbcAction* pbc_action;
 public:
   explicit EffectiveEnergyDrift(const ActionOptions&);
   ~EffectiveEnergyDrift();
@@ -142,8 +142,8 @@ EffectiveEnergyDrift::EffectiveEnergyDrift(const ActionOptions&ao):
   ActionPilot(ao),
   fmt("%f"),
   eed(0.0),
-  atoms(plumed.getAtoms()),
   boxValue(NULL),
+  domain_decomposition(NULL),
   nProc(plumed.comm.Get_size()),
   initialBias(0.0),
   isFirstStep(true),
@@ -186,11 +186,6 @@ EffectiveEnergyDrift::EffectiveEnergyDrift(const ActionOptions&ao):
   indexDsp.resize(nProc);
   dataCnt.resize(nProc);
   dataDsp.resize(nProc);
-  //resize the received buffers
-  indexR.resize(atoms.getNatoms());
-  dataR.resize(atoms.getNatoms()*6);
-  backmap.resize(atoms.getNatoms());
-  // Retrieve the positions
   ActionToPutData* ax=plumed.getActionSet().selectWithLabel<ActionToPutData*>("posx");
   if( ax ) { pos_values.push_back(ax->copyOutput(0)); addDependency( ax ); }
   ActionToPutData* ay=plumed.getActionSet().selectWithLabel<ActionToPutData*>("posy");
@@ -198,8 +193,20 @@ EffectiveEnergyDrift::EffectiveEnergyDrift(const ActionOptions&ao):
   ActionToPutData* az=plumed.getActionSet().selectWithLabel<ActionToPutData*>("posz");
   if( az ) { pos_values.push_back(az->copyOutput(0)); addDependency( az ); }
   // Retrieve the box
-  ActionToPutData* ap=plumed.getActionSet().selectWithLabel<ActionToPutData*>("Box");
-  if( ap ) { boxValue=ap->copyOutput(0); addDependency( ap ); }
+  pbc_action=plumed.getActionSet().selectWithLabel<PbcAction*>("Box");
+  if( pbc_action ) { boxValue=pbc_action->copyOutput(0); addDependency( pbc_action ); }
+  //resize the received buffers
+  indexR.resize(ax->copyOutput(0)->getShape()[0]);
+  dataR.resize(6*ax->copyOutput(0)->getShape()[0]);
+  backmap.resize(ax->copyOutput(0)->getShape()[0]);
+  // Get all the interface actions
+  std::vector<ActionForInterface*> af = plumed.getActionSet().select<ActionForInterface*>();
+  for(unsigned i=0;i<af.size();++i) {
+      ActionToPutData* ap = dynamic_cast<ActionToPutData*>( af[i] );
+      if( !ap && !domain_decomposition ) domain_decomposition = af[i];
+      else if( !ap && domain_decomposition ) warning("found more than one interface so don't know how to sum energy");
+  }
+  if( !domain_decomposition ) error("found no DomainDecomposition action to use");
 }
 
 EffectiveEnergyDrift::~EffectiveEnergyDrift() {
@@ -207,10 +214,10 @@ EffectiveEnergyDrift::~EffectiveEnergyDrift() {
 }
 
 void EffectiveEnergyDrift::update() {
-  bool pbc=atoms.getPbc().isSet();
+  Pbc & tpbc(pbc_action->getPbc()); bool pbc=tpbc.isSet();
 
   //retrive data of local atoms
-  const std::vector<int>& gatindex = atoms.getGatindex(); nLocalAtoms = gatindex.size();
+  const std::vector<int>& gatindex = domain_decomposition->getGatindex(); nLocalAtoms = gatindex.size();
   positions.resize( nLocalAtoms ); forces.resize( nLocalAtoms );
   for(unsigned i=0; i<nLocalAtoms; ++i) {
       for(unsigned k=0; k<3; ++k ) {
@@ -219,8 +226,8 @@ void EffectiveEnergyDrift::update() {
       }
   }
   if(pbc) {
-    Tensor B=atoms.getPbc().getBox();
-    Tensor IB=atoms.getPbc().getInvBox();
+    Tensor B=tpbc.getBox();
+    Tensor IB=tpbc.getInvBox();
     #pragma omp parallel for
     for(unsigned i=0; i<positions.size(); ++i) {
       positions[i]=matmul(positions[i],IB);
@@ -234,7 +241,7 @@ void EffectiveEnergyDrift::update() {
   //init stored data at the first step
   if(isFirstStep) {
     pDdStep=0;
-    pGatindex = atoms.getGatindex();
+    pGatindex = domain_decomposition->getGatindex();
     pNLocalAtoms = pGatindex.size();
     pPositions=positions;
     pForces=forces;
@@ -246,7 +253,7 @@ void EffectiveEnergyDrift::update() {
   }
 
   //if the dd has changed we have to reshare the stored data
-  if(pDdStep<atoms.getDdStep() && nLocalAtoms<atoms.getNatoms()) {
+  if(pDdStep<domain_decomposition->getDdStep() && nLocalAtoms<indexR.size()) {
     //prepare the data to be sent
     indexS.resize(pNLocalAtoms);
     dataS.resize(pNLocalAtoms*6);
@@ -340,7 +347,7 @@ void EffectiveEnergyDrift::update() {
   }
 
   //store the data of the current step
-  pDdStep = atoms.getDdStep();
+  pDdStep = domain_decomposition->getDdStep();
   pNLocalAtoms = nLocalAtoms;
   pPositions.swap(positions);
   pForces.swap(forces);

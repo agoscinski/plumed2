@@ -24,8 +24,8 @@
 #include "core/ActionRegister.h"
 #include "core/PlumedMain.h"
 #include "core/ActionSet.h"
-#include "core/Atoms.h"
 #include "tools/Pbc.h"
+#include "tools/Matrix.h"
 #include "PathProjectionCalculator.h"
 
 namespace PLMD {
@@ -212,6 +212,8 @@ void PathReparameterization::update() {
   // And reparameterize the begining and end of the path
   if( ifix1>0 ) reparameterizePart( ifix1, 0, target );
   if( ifix2<(path_projector.getNumberOfFrames()-1) ) reparameterizePart( ifix2, path_projector.getNumberOfFrames()-1, target );
+  // And update any RMSD objects that depend on input values
+  path_projector.updateDepedentRMSDObjects();
 }
 
 }

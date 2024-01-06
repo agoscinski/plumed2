@@ -27,7 +27,6 @@
 #include "tools/Exception.h"
 #include "tools/OFile.h"
 #include "tools/OpenMP.h"
-#include "Atoms.h"
 #include "PlumedMain.h"
 
 namespace PLMD {
@@ -42,12 +41,13 @@ Value::Value():
   historydependent(false),
   istimeseries(false),
   shape(std::vector<unsigned>()),
+  ntasks(1),
+  reducedTasks(false),
   constant(false),
   alwaysstore(false),
   storedata(true),
   neverstore(false),
   symmetric(false),
-  bufstart(0),
   streampos(0),
   periodicity(unset),
   min(0.0),
@@ -65,6 +65,17 @@ Value::Value(const std::string& name):
   hasForce(false),
   hasDeriv(true),
   name(name),
+  ngrid_der(0),
+  historydependent(false),
+  istimeseries(false),
+  ntasks(1),
+  reducedTasks(false),
+  constant(false),
+  alwaysstore(false),
+  storedata(true),
+  neverstore(false),
+  symmetric(false),
+  streampos(0),
   periodicity(unset),
   min(0.0),
   max(0.0),
@@ -86,12 +97,13 @@ Value::Value(ActionWithValue* av, const std::string& name, const bool withderiv,
   ngrid_der(0),
   historydependent(false),
   istimeseries(false),
+  ntasks(1),
+  reducedTasks(false),
   constant(false),
   alwaysstore(false),
   storedata(true),
   neverstore(false),
   symmetric(false),
-  bufstart(0),
   streampos(0),
   periodicity(unset),
   min(0.0),
@@ -108,10 +120,14 @@ Value::Value(ActionWithValue* av, const std::string& name, const bool withderiv,
 void Value::setShape( const std::vector<unsigned>&ss ) {
   shape.resize( ss.size() );
   for(unsigned i=0; i<shape.size(); ++i) shape[i]=ss[i];
+  // Set the number of tasks here that are done in loop
+  if( hasDeriv && shape.size()>0 ) ntasks=getNumberOfValues();
+  else if( shape.size()>0 ) ntasks=shape[0];
   // Matrices are resized dynamically so we can use the sparsity pattern to reduce the 
   // overhead on memory
   if( getRank()==2 ) {
       if( !hasDeriv && !alwaysstore && !istimeseries ) return;
+      if( !hasDeriv && !alwaysstore && istimeseries && getNumberOfColumns()==0 ) return;
   }
 
   if( (hasDeriv || storedata || istimeseries) && shape.size()>0 ) {
@@ -163,7 +179,7 @@ void Value::alwaysStoreValues() {
 
 void Value::makeHistoryDependent() {
   historydependent=true;
-  if( shape.size()==1 && !hasDeriv && action->getName()!="AVERAGE" ) { istimeseries=true; setShape( shape ); }
+  if( shape.size()>0 && !hasDeriv && action->getName()!="AVERAGE" ) { istimeseries=true; setShape( shape ); }
 }
 
 void Value::neverStoreValues() {
@@ -221,10 +237,9 @@ void Value::setGradients( ActionAtomistic* aa, unsigned& start ) {
   // Can't do gradients if we don't have derivatives
   if( !hasDeriv ) return;
   plumed_assert( shape.size()==0 );
-  Atoms&atoms((aa->plumed).getAtoms());
   for(unsigned j=0; j<aa->getNumberOfAtoms(); ++j) {
       Vector der(data[1+start+3*j],data[1+start+3*j+1],data[1+start+3*j+2]);
-      atoms.getGradient( aa->getAbsoluteIndex(j), der, gradients );
+      aa->getGradient( j, der, gradients );
   }
   start += aa->getNumberOfAtoms();
 }
@@ -271,6 +286,12 @@ double Value::get(const unsigned& ival, const bool trueind) const {
 #endif
   if( shape.size()==2 && getNumberOfColumns()<shape[1] && trueind ) {
       unsigned irow = std::floor( ival / shape[0] ), jcol = ival%shape[0];
+      // This is a special treatment for the lower triangular matrices that are used when 
+      // we do ITRE with COLLECT_FRAMES
+      if( getNumberOfColumns()==0 ) {
+          if( jcol<=irow ) return data[0.5*irow*(irow+1) + jcol] / norm;
+          return 0;
+      }
       for(unsigned i=0; i<getRowLength(irow); ++i) {
           if( getRowIndex(irow,i)==jcol ) return data[irow*getNumberOfColumns()+i] / norm;
       }
@@ -331,14 +352,14 @@ unsigned Value::getPositionInMatrixStash() const {
 }
 
 unsigned Value::getNumberOfColumns() const {
-  plumed_assert( shape.size()==2 && !hasDeriv );
+  plumed_massert( shape.size()==2 && !hasDeriv, "failing in " + name );
   if( alwaysstore ) return shape[1];
   return action->getNumberOfColumns();
 }
 
 unsigned Value::getRowLength( const unsigned& irow ) const {
-  if( !alwaysstore ) return matindexes[(1+getNumberOfColumns())*irow];
-  return shape[1];
+  if( alwaysstore || matindexes[(1+getNumberOfColumns())*irow]>shape[1] ) return shape[1];
+  return matindexes[(1+getNumberOfColumns())*irow];
 }
  
 unsigned Value::getRowIndex( const unsigned& irow, const unsigned& jind ) const {
@@ -398,12 +419,12 @@ bool Value::getDerivativeIsZeroWhenValueIsZero() const {
   return derivativeIsZeroWhenValueIsZero;
 }
 
-// void Value::setBufferPosition( const unsigned& ibuf ){
-//   bufstart = ibuf;
-// }
+void Value::setNumberOfTasks( const unsigned& nt ) {
+  ntasks=nt;
+}
 
-// unsigned Value::getBufferPosition() const {
-//   return bufstart;
-// }
+unsigned Value::getNumberOfTasks() const {
+  return ntasks;
+}
 
 }

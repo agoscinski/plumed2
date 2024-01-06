@@ -23,10 +23,12 @@
 #define __PLUMED_core_DataPassingTools_h
 
 #include <string>
+#include <memory>
 #include <map>
-#include "ActionToPutData.h"
 
 namespace PLMD {
+
+class PlumedMain;
 
 class DataPassingTools {
 public:
@@ -34,10 +36,8 @@ public:
   virtual int getRealPrecision() const = 0;
   virtual double MD2double(const void*) const=0;
   virtual void double2MD(const double&,void*) const=0;
-  virtual void setThreeVectorValues( const std::string& name, std::map<std::string,ActionToPutData*>& inputs, void *pp )=0;
-  virtual void setThreeVectorForces( const std::string& name, std::map<std::string,ActionToPutData*>& inputs, void *pp )=0;
-  virtual void setVectorValues( const unsigned& n, const std::string& name, std::map<std::string,ActionToPutData*>& inputs, void *pp )=0;
-  virtual void setVectorForces( const unsigned& n, const std::string& name, std::map<std::string,ActionToPutData*>& inputs, void *pp )=0;
+  virtual void setThreeVectorValues( const std::string& name, PlumedMain& plumed, void *pp )=0;
+  virtual void setThreeVectorForces( const std::string& name, PlumedMain& plumed, void *pp )=0;
 };
 
 }
